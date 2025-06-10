@@ -1,5 +1,6 @@
 use crate::error::Error;
 use ark_core::BoardingOutput;
+use ark_core::UtxoCoinSelection;
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::secp256k1::Message;
 use bitcoin::secp256k1::SecretKey;
@@ -38,6 +39,8 @@ pub trait OnchainWallet {
     ) -> Result<Psbt, Error>;
 
     fn sign(&self, psbt: &mut Psbt) -> Result<bool, Error>;
+
+    fn select_coins(&self, target_amount: Amount) -> Result<UtxoCoinSelection, Error>;
 }
 
 pub trait Persistence {

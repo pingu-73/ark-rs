@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
-use crate::common::InMemoryDb;
-use ark_bdk_wallet::Wallet;
+use crate::common::wait_until_balance;
+use ark_client::wallet::OnchainWallet;
 use bitcoin::address::NetworkUnchecked;
 use bitcoin::key::Secp256k1;
 use bitcoin::Amount;
@@ -11,7 +11,6 @@ use common::Nigiri;
 use rand::thread_rng;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 
 mod common;
 
@@ -25,7 +24,8 @@ pub async fn send_onchain_vtxo_and_boarding_output() {
     let secp = Secp256k1::new();
     let mut rng = thread_rng();
 
-    let alice = set_up_client("alice".to_string(), nigiri.clone(), secp.clone()).await;
+    let (alice, alice_wallet) =
+        set_up_client("alice".to_string(), nigiri.clone(), secp.clone()).await;
 
     let offchain_balance = alice.offchain_balance().await.unwrap();
 
@@ -39,6 +39,16 @@ pub async fn send_onchain_vtxo_and_boarding_output() {
         .faucet_fund(&alice_boarding_address, fund_amount)
         .await;
 
+    // We give Alice two extra UTXOs to be able to bump the two transactions she needs to broadcast
+    // to commit her VTXO (and the change VTXO too!) to the blockchain.
+    let alice_onchain_address = alice.get_onchain_address().unwrap();
+    nigiri
+        .faucet_fund(&alice_onchain_address, Amount::from_sat(100_000))
+        .await;
+    nigiri
+        .faucet_fund(&alice_onchain_address, Amount::from_sat(100_000))
+        .await;
+
     let offchain_balance = alice.offchain_balance().await.unwrap();
 
     assert_eq!(offchain_balance.total(), Amount::ZERO);
@@ -46,7 +56,37 @@ pub async fn send_onchain_vtxo_and_boarding_output() {
     alice.board(&mut rng).await.unwrap();
     wait_until_balance(&alice, fund_amount, Amount::ZERO).await;
 
-    alice.commit_vtxos_on_chain().await.unwrap();
+    // Ensure that the round TX is mined.
+    nigiri.mine(1).await;
+    alice_wallet.sync().await.unwrap();
+
+    let (alice_offchain_address, _) = alice.get_offchain_address().unwrap();
+
+    alice
+        .send_vtxo(alice_offchain_address, Amount::from_sat(100_000))
+        .await
+        .unwrap();
+
+    wait_until_balance(&alice, Amount::ZERO, fund_amount).await;
+
+    let unilateral_exit_trees = alice.build_unilateral_exit_trees().await.unwrap();
+
+    for (i, unilateral_exit_tree) in unilateral_exit_trees.iter().enumerate() {
+        while let Some(txid) = alice
+            .broadcast_next_unilateral_exit_node(unilateral_exit_tree)
+            .await
+            .expect("to broadcast unilateral exit node")
+        {
+            tracing::info!(i, %txid, "Broadcast virtual transaction");
+
+            // The transaction needs a confirmation so that we can bump the P2A output for the next
+            // transaction in the tree.
+            nigiri.mine(1).await;
+            alice_wallet.sync().await.unwrap();
+        }
+
+        tracing::debug!(i, "Finished with unilateral exit tree");
+    }
 
     // Get one confirmation on the VTXO.
     nigiri.mine(1).await;
@@ -88,8 +128,9 @@ pub async fn send_onchain_vtxo_and_boarding_output() {
         .await
         .unwrap();
 
-    assert_eq!(tx.input.len(), 2);
-    assert_eq!(prevouts.len(), 2);
+    // 1 boarding output and 2 VTXOs.
+    assert_eq!(tx.input.len(), 3);
+    assert_eq!(prevouts.len(), 3);
 
     for (i, prevout) in prevouts.iter().enumerate() {
         let script_pubkey = prevout.script_pubkey.clone();
@@ -112,33 +153,4 @@ pub async fn send_onchain_vtxo_and_boarding_output() {
         )
         .expect("valid input");
     }
-}
-
-async fn wait_until_balance(
-    client: &ark_client::Client<Nigiri, Wallet<InMemoryDb>>,
-    confirmed_target: Amount,
-    pending_target: Amount,
-) {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            let offchain_balance = client.offchain_balance().await.unwrap();
-
-            tracing::debug!(
-                ?offchain_balance,
-                %confirmed_target,
-                %pending_target,
-                "Waiting for balance to match targets"
-            );
-
-            if offchain_balance.confirmed() == confirmed_target
-                && offchain_balance.pending() == pending_target
-            {
-                return;
-            }
-
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-    })
-    .await
-    .unwrap();
 }

@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
+use ark_bdk_wallet::Wallet;
 use ark_client::error::Error;
 use ark_client::wallet::Persistence;
 use ark_client::Blockchain;
@@ -28,6 +29,78 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::Once;
 use std::sync::RwLock;
+use std::time::Duration;
+
+pub struct BitcoinRpc {
+    url: String,
+    username: String,
+    password: String,
+    reqwest_client: reqwest::Client,
+}
+
+impl BitcoinRpc {
+    pub fn new(url: String, username: String, password: String) -> Self {
+        Self {
+            url,
+            username,
+            password,
+            reqwest_client: reqwest::Client::new(),
+        }
+    }
+
+    pub async fn submit_package(&self, txs: Vec<String>) -> Result<(), Error> {
+        let rpc_request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "submitpackage",
+            "params": [txs]
+        });
+
+        let response = self
+            .reqwest_client
+            .post(&self.url)
+            .header("Content-Type", "application/json")
+            .basic_auth(&self.username, Some(&self.password))
+            .json(&rpc_request)
+            .send()
+            .await
+            .map_err(Error::wallet)?;
+
+        let status = response.status();
+        let response_text = response.text().await.map_err(Error::wallet)?;
+
+        if !status.is_success() {
+            return Err(Error::wallet(format!(
+                "Bitcoin RPC request failed with status {}: {}",
+                status, response_text,
+            )));
+        }
+
+        if response_text.contains("failed") {
+            return Err(Error::wallet(format!(
+                "Bitcoin RPC submitpackage failed: {}",
+                response_text
+            )));
+        }
+
+        // Parse JSON-RPC response to check for RPC-level errors
+        let rpc_response: serde_json::Value = serde_json::from_str(&response_text)
+            .map_err(|e| Error::wallet(format!("Failed to parse RPC response: {}", e)))?;
+
+        if let Some(error) = rpc_response.get("error") {
+            return Err(Error::wallet(format!(
+                "Bitcoin RPC submitpackage error: {}",
+                error
+            )));
+        }
+
+        tracing::debug!(
+            "Successfully submitted package of {} transactions",
+            txs.len()
+        );
+        Ok(())
+    }
+}
 
 pub struct Nigiri {
     esplora_client: esplora_client::BlockingClient,
@@ -37,16 +110,26 @@ pub struct Nigiri {
     /// This can be used to ensure that certain outpoints are considered spendable, which is useful
     /// for testing scripts with opcodes such as `OP_CSV`.
     outpoint_blocktime_offset: RwLock<u64>,
+    /// Bitcoin RPC client for package submission
+    bitcoin_rpc: BitcoinRpc,
 }
 
 impl Nigiri {
     pub fn new() -> Self {
-        let builder = esplora_client::Builder::new("http://localhost:30000");
+        let esplora_url = "http://localhost:30000";
+        let bitcoin_rpc = BitcoinRpc::new(
+            "http://localhost:18443".to_string(),
+            "admin1".to_string(),
+            "123".to_string(),
+        );
+
+        let builder = esplora_client::Builder::new(esplora_url);
         let esplora_client = builder.build_blocking();
 
         Self {
             esplora_client,
             outpoint_blocktime_offset: RwLock::new(0),
+            bitcoin_rpc,
         }
     }
 
@@ -91,7 +174,7 @@ impl Nigiri {
             .unwrap();
 
         // Wait for output to be confirmed.
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        tokio::time::sleep(Duration::from_secs(5)).await;
 
         OutPoint {
             txid,
@@ -211,6 +294,19 @@ impl Blockchain for Nigiri {
 
         Ok(())
     }
+
+    async fn get_fee_rate(&self) -> Result<f64, Error> {
+        Ok(1.0)
+    }
+
+    async fn broadcast_package(&self, txs: &[&Transaction]) -> Result<(), Error> {
+        let txs_hex = txs
+            .iter()
+            .map(bitcoin::consensus::encode::serialize_hex)
+            .collect::<Vec<_>>();
+
+        self.bitcoin_rpc.submit_package(txs_hex).await
+    }
 }
 
 #[derive(Default)]
@@ -258,19 +354,17 @@ pub async fn set_up_client(
     name: String,
     nigiri: Arc<Nigiri>,
     secp: Secp256k1<All>,
-) -> Client<Nigiri, ark_bdk_wallet::Wallet<InMemoryDb>> {
+) -> (Client<Nigiri, Wallet<InMemoryDb>>, Arc<Wallet<InMemoryDb>>) {
     let mut rng = thread_rng();
 
     let sk = SecretKey::new(&mut rng);
     let kp = Keypair::from_secret_key(&secp, &sk);
 
     let db = InMemoryDb::default();
-    let wallet =
-        ark_bdk_wallet::Wallet::new(kp, secp, Network::Regtest, "http://localhost:3000", db)
-            .unwrap();
+    let wallet = Wallet::new(kp, secp, Network::Regtest, "http://localhost:3000", db).unwrap();
     let wallet = Arc::new(wallet);
 
-    OfflineClient::new(
+    let client = OfflineClient::new(
         name,
         kp,
         nigiri,
@@ -279,7 +373,39 @@ pub async fn set_up_client(
     )
     .connect()
     .await
-    .unwrap()
+    .unwrap();
+
+    (client, wallet)
+}
+
+#[allow(unused)]
+pub async fn wait_until_balance(
+    client: &Client<Nigiri, Wallet<InMemoryDb>>,
+    confirmed_target: Amount,
+    pending_target: Amount,
+) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let offchain_balance = client.offchain_balance().await.unwrap();
+
+            tracing::debug!(
+                ?offchain_balance,
+                %confirmed_target,
+                %pending_target,
+                "Waiting for balance to match targets"
+            );
+
+            if offchain_balance.confirmed() == confirmed_target
+                && offchain_balance.pending() == pending_target
+            {
+                return;
+            }
+
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .unwrap();
 }
 
 pub fn init_tracing() {
@@ -292,6 +418,7 @@ pub fn init_tracing() {
                  bdk=info,\
                  tower=info,\
                  hyper_util=info,\
+                 hyper=info,\
                  h2=warn",
             )
             .with_test_writer()

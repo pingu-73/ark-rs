@@ -6,6 +6,8 @@ use ark_client::wallet::BoardingWallet;
 use ark_client::wallet::OnchainWallet;
 use ark_client::wallet::Persistence;
 use ark_core::BoardingOutput;
+use ark_core::SelectedUtxo;
+use ark_core::UtxoCoinSelection;
 use bdk_esplora::EsploraAsyncExt;
 use bdk_wallet::KeychainKind;
 use bdk_wallet::SignOptions;
@@ -165,14 +167,64 @@ where
     }
 
     fn sign(&self, psbt: &mut Psbt) -> Result<bool, Error> {
+        let options = SignOptions {
+            trust_witness_utxo: true,
+            ..SignOptions::default()
+        };
+
         let finalized = self
             .inner
             .read()
             .expect("read lock")
-            .sign(psbt, SignOptions::default())
+            .sign(psbt, options)
             .map_err(Error::wallet)?;
 
         Ok(finalized)
+    }
+
+    fn select_coins(&self, target_amount: Amount) -> Result<UtxoCoinSelection, Error> {
+        let wallet = self.inner.read().expect("read lock");
+
+        // Get all unspent UTXOs
+        let utxos = wallet.list_unspent();
+
+        // Simple coin selection: pick UTXOs until we reach the target amount
+        let mut selected_utxos = Vec::new();
+        let mut total_selected = Amount::ZERO;
+
+        for utxo in utxos {
+            if total_selected >= target_amount {
+                break;
+            }
+
+            // Get the address for this UTXO
+            let address = wallet
+                .peek_address(utxo.keychain, utxo.derivation_index)
+                .address;
+
+            selected_utxos.push(SelectedUtxo {
+                outpoint: utxo.outpoint,
+                amount: utxo.txout.value,
+                address,
+            });
+
+            total_selected += utxo.txout.value;
+        }
+
+        if total_selected < target_amount {
+            return Err(Error::wallet(format!(
+                "Insufficient funds: need {}, have {}",
+                target_amount, total_selected
+            )));
+        }
+
+        let change_amount = total_selected - target_amount;
+
+        Ok(UtxoCoinSelection {
+            selected_utxos,
+            total_selected,
+            change_amount,
+        })
     }
 }
 

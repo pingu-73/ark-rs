@@ -5,6 +5,7 @@ use bitcoin::Amount;
 use bitcoin::Network;
 use bitcoin::OutPoint;
 use bitcoin::Psbt;
+use bitcoin::Transaction;
 use bitcoin::Txid;
 use musig::musig;
 use std::collections::HashMap;
@@ -52,7 +53,7 @@ pub struct Round {
     pub id: String,
     pub start: i64,
     pub end: i64,
-    pub round_tx: Option<Psbt>,
+    pub round_tx: Option<Transaction>,
     pub vtxo_tree: Option<TxTree>,
     pub forfeit_txs: Vec<Psbt>,
     pub connector_tree: Option<TxTree>,
@@ -85,8 +86,6 @@ pub struct Info {
     pub round_interval: i64,
     pub network: Network,
     pub dust: Amount,
-    pub boarding_descriptor_template: String,
-    pub vtxo_descriptor_templates: Vec<String>,
     pub forfeit_address: bitcoin::Address,
     pub version: String,
     pub utxo_min_amount: Option<Amount>,
@@ -163,4 +162,26 @@ pub struct RoundTransaction {
     pub spent_vtxos: Vec<VtxoOutPoint>,
     pub spendable_vtxos: Vec<VtxoOutPoint>,
     pub claimed_boarding_utxos: Vec<OutPoint>,
+}
+
+pub struct VtxoChains {
+    pub inner: Vec<VtxoChain>,
+    pub root_commitment_txid: Txid,
+}
+
+pub struct VtxoChain {
+    pub txid: Txid,
+    pub spends: Vec<ChainedTx>,
+    pub expires_at: i64,
+}
+
+pub struct ChainedTx {
+    pub txid: Txid,
+    pub tx_type: ChainedTxType,
+}
+
+pub enum ChainedTxType {
+    Commitment,
+    Virtual,
+    Unspecified,
 }

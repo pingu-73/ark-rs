@@ -8,7 +8,6 @@ pub mod proof_of_funds;
 pub mod redeem;
 pub mod round;
 pub mod server;
-pub mod tx_weight_estimator;
 pub mod unilateral_exit;
 pub mod vtxo;
 
@@ -27,6 +26,10 @@ pub use history::generate_incoming_vtxo_transaction_history;
 pub use history::generate_outgoing_vtxo_transaction_history;
 pub use history::ArkTransaction;
 pub use script::extract_sequence_from_csv_sig_script;
+pub use unilateral_exit::build_anchor_tx;
+pub use unilateral_exit::build_unilateral_exit_tree_txids;
+pub use unilateral_exit::SelectedUtxo;
+pub use unilateral_exit::UtxoCoinSelection;
 pub use vtxo::Vtxo;
 
 pub const UNSPENDABLE_KEY: &str =
