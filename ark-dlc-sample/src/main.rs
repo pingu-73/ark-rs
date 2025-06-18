@@ -383,12 +383,12 @@ async fn main() -> Result<()> {
         if is_heads {
             assert_eq!(
                 virtual_tx_outpoints.spendable_balance(),
-                Amount::from_sat(69_999_897)
+                Amount::from_sat(70_000_000)
             );
         } else {
             assert_eq!(
                 virtual_tx_outpoints.spendable_balance(),
-                Amount::from_sat(24_999_897)
+                Amount::from_sat(25_000_000)
             );
         }
     };
@@ -405,12 +405,12 @@ async fn main() -> Result<()> {
         if is_heads {
             assert_eq!(
                 virtual_tx_outpoints.spendable_balance(),
-                Amount::from_sat(129_999_617)
+                Amount::from_sat(130_000_000)
             );
         } else {
             assert_eq!(
                 virtual_tx_outpoints.spendable_balance(),
-                Amount::from_sat(174_999_617)
+                Amount::from_sat(175_000_000)
             );
         }
     };
