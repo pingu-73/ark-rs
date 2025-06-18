@@ -16,23 +16,10 @@ pub struct TxTree {
 }
 
 impl TxTree {
-    pub fn leaves(&self) -> Vec<TxTreeNode> {
-        let mut leaves = self
-            .levels
-            .last()
-            .map(|l| &l.nodes)
-            .unwrap_or(&Vec::new())
-            .clone(); // Start with last level's nodes
-
-        for level in &self.levels[..self.levels.len().saturating_sub(1)] {
-            // Iterate over all levels except the last
-            for node in level.nodes.iter() {
-                if node.tx.outputs.len() == 1 {
-                    leaves.push(node.clone()); // Assuming Node implements Clone
-                }
-            }
-        }
-        leaves
+    pub fn txs(&self) -> impl Iterator<Item = &Transaction> {
+        self.levels
+            .iter()
+            .flat_map(|level| level.nodes.iter().map(|node| &node.tx.unsigned_tx))
     }
 }
 
