@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
+use crate::common::wait_until_balance;
 use bitcoin::key::Secp256k1;
 use bitcoin::Amount;
 use common::init_tracing;
@@ -19,8 +20,8 @@ pub async fn e2e() {
     let secp = Secp256k1::new();
     let mut rng = thread_rng();
 
-    let alice = set_up_client("alice".to_string(), nigiri.clone(), secp.clone()).await;
-    let bob = set_up_client("bob".to_string(), nigiri.clone(), secp).await;
+    let (alice, _) = set_up_client("alice".to_string(), nigiri.clone(), secp.clone()).await;
+    let (bob, _) = set_up_client("bob".to_string(), nigiri.clone(), secp).await;
 
     let alice_offchain_balance = alice.offchain_balance().await.unwrap();
     let bob_offchain_balance = bob.offchain_balance().await.unwrap();
@@ -97,15 +98,13 @@ pub async fn e2e() {
         "Sent VTXO from Alice to Bob"
     );
 
-    let redeem_tx_fee = redeem_tx.fee().unwrap();
-
-    assert_eq!(alice_offchain_balance.confirmed(), Amount::ZERO);
-    assert_eq!(
-        alice_offchain_balance.pending(),
-        alice_fund_amount - send_to_bob_vtxo_amount - redeem_tx_fee
-    );
-    assert_eq!(bob_offchain_balance.confirmed(), Amount::ZERO);
-    assert_eq!(bob_offchain_balance.pending(), send_to_bob_vtxo_amount);
+    wait_until_balance(
+        &alice,
+        Amount::ZERO,
+        alice_fund_amount - send_to_bob_vtxo_amount,
+    )
+    .await;
+    wait_until_balance(&bob, Amount::ZERO, send_to_bob_vtxo_amount).await;
 
     bob.board(&mut rng).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -122,7 +121,7 @@ pub async fn e2e() {
     assert_eq!(alice_offchain_balance.confirmed(), Amount::ZERO);
     assert_eq!(
         alice_offchain_balance.pending(),
-        alice_fund_amount - send_to_bob_vtxo_amount - redeem_tx_fee
+        alice_fund_amount - send_to_bob_vtxo_amount
     );
     assert_eq!(bob_offchain_balance.confirmed(), send_to_bob_vtxo_amount);
     assert_eq!(bob_offchain_balance.pending(), Amount::ZERO);
@@ -141,7 +140,7 @@ pub async fn e2e() {
 
     assert_eq!(
         alice_offchain_balance.confirmed(),
-        alice_fund_amount - send_to_bob_vtxo_amount - redeem_tx_fee
+        alice_fund_amount - send_to_bob_vtxo_amount
     );
     assert_eq!(alice_offchain_balance.pending(), Amount::ZERO);
     assert_eq!(bob_offchain_balance.confirmed(), send_to_bob_vtxo_amount);

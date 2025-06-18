@@ -402,8 +402,6 @@ pub fn create_and_sign_forfeit_txs(
     let fee_rate_sats_per_kvb = min_relay_fee_rate_sats_per_kvb as u64;
     let connector_amount = dust;
 
-    let connector_psbts = connector_tree.leaves();
-
     let mut signed_forfeit_psbts = Vec::new();
     for VtxoInput {
         vtxo,
@@ -420,38 +418,25 @@ pub fn create_and_sign_forfeit_txs(
             ))
         })?;
 
-        for TxTreeNode {
-            tx: connector_psbt, ..
-        } in connector_psbts.iter()
-        {
-            let connector_txid = connector_psbt.unsigned_tx.compute_txid();
-            if connector_txid == connector_outpoint.txid {}
-        }
+        let mut connector_psbts = connector_tree.txs();
+        let connector_psbt = connector_psbts
+            .find(|tx| {
+                let computed_connector_txid = tx.compute_txid();
 
-        let connector_output = connector_psbts
-            .iter()
-            .find(
-                |TxTreeNode {
-                     tx: connector_psbt, ..
-                 }| {
-                    let connector_txid = connector_psbt.unsigned_tx.compute_txid();
-                    connector_txid == connector_outpoint.txid
-                },
-            )
-            .map(|node| {
-                let txout = node
-                    .tx
-                    .unsigned_tx
-                    .tx_out(connector_outpoint.vout as usize)
-                    .map_err(Error::ad_hoc)?;
-
-                Ok(txout.clone())
+                computed_connector_txid == connector_outpoint.txid
             })
             .ok_or_else(|| {
                 Error::ad_hoc(format!(
-                    "connector output missing for VTXO outpoint {vtxo_outpoint}"
+                    "connector PSBT missing for VTXO outpoint {vtxo_outpoint}"
                 ))
-            })??;
+            })?;
+
+        let connector_output = connector_psbt
+            .tx_out(connector_outpoint.vout as usize)
+            .map_err(Error::ad_hoc)
+            .with_context(|| {
+                format!("connector output missing for VTXO outpoint {vtxo_outpoint}")
+            })?;
 
         let forfeit_output = TxOut {
             value: *vtxo_amount + connector_amount - min_relay_fee,

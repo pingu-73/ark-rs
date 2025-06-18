@@ -1,4 +1,5 @@
-use crate::server::Round;
+use crate::redeem::anchor_output;
+use crate::server;
 use crate::BoardingOutput;
 use crate::Error;
 use crate::ErrorContext;
@@ -17,12 +18,14 @@ use bitcoin::Address;
 use bitcoin::Amount;
 use bitcoin::OutPoint;
 use bitcoin::Psbt;
+use bitcoin::Sequence;
 use bitcoin::TapLeafHash;
 use bitcoin::TapSighashType;
 use bitcoin::Transaction;
 use bitcoin::TxIn;
 use bitcoin::TxOut;
 use bitcoin::Txid;
+use bitcoin::Weight;
 use bitcoin::Witness;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -244,200 +247,351 @@ pub fn create_unilateral_exit_transaction(
     Ok(tx)
 }
 
-pub struct VtxoProvenance {
-    /// Where the VTXO would end up on the blockchain if it were to become a UTXO.
-    outpoint: OutPoint,
-    /// The ID of the round transaction from which this VTXO comes from.
-    round_txid: Txid,
-    /// If this is an unconfirmed (out-of-round) VTXO, this is the redeem transaction the VTXO is
-    /// an output of.
-    // TODO: Given that an unconfirmed VTXO can come from another unconfirmed VTXO, one transaction
-    // is not enough! Thus, this should be a list.
-    redeem_transaction: Option<Psbt>,
-}
-
-impl VtxoProvenance {
-    pub fn new(outpoint: OutPoint, round_txid: Txid) -> Self {
-        Self {
-            outpoint,
-            round_txid,
-            redeem_transaction: None,
-        }
+/// Build the unilateral exit tree of TXIDs for a VTXO from a [`sever::VtxoChains`].
+pub fn build_unilateral_exit_tree_txids(
+    vtxo_chains: &server::VtxoChains,
+    // The TXID of the VTXO we want to commit on-chain.
+    virtual_txid: Txid,
+) -> Result<Vec<Vec<Txid>>, Error> {
+    // Create a hash-map for quick lookups: TXID -> `VtxoChain`.
+    let mut chain_map: HashMap<Txid, &server::VtxoChain> = HashMap::new();
+    for vtxo_chain in &vtxo_chains.inner {
+        chain_map.insert(vtxo_chain.txid, vtxo_chain);
     }
 
-    pub fn new_unconfirmed(outpoint: OutPoint, round_txid: Txid, redeem_transaction: Psbt) -> Self {
+    /// Find all the paths from a virtual transaction to the root commitment transaction,
+    /// recursively.
+    fn find_paths_to_commitment(
+        current_txid: Txid,
+        chain_map: &HashMap<Txid, &server::VtxoChain>,
+        current_path: &mut Vec<Txid>,
+        all_paths: &mut Vec<Vec<Txid>>,
+        visited: &mut HashSet<Txid>,
+    ) -> Result<(), Error> {
+        // Safety check to prevent an infinite loop.
+        if current_path.len() > 1_000 {
+            return Err(Error::ad_hoc(
+                "chain traversal exceeded maximum depth of 1000",
+            ));
+        }
+
+        // Safety check to reject cycles.
+        if visited.contains(&current_txid) {
+            return Err(Error::ad_hoc("chain traversal lead to cycle"));
+        }
+        visited.insert(current_txid);
+
+        // Add current TXID to path.
+        current_path.push(current_txid);
+
+        // Look through parent transactions to continue building up the chain(s).
+        let chain = chain_map.get(&current_txid).ok_or_else(|| {
+            Error::ad_hoc(format!("could not find VtxoChain for TXID: {current_txid}",))
+        })?;
+        // Check if any of the transactions spent by this virtual TX are the commitment transaction.
+        let mut reached_commitment = false;
+
+        for chained_tx in &chain.spends {
+            match chained_tx.tx_type {
+                server::ChainedTxType::Commitment => {
+                    // We've reached our destination.
+                    all_paths.push(current_path.clone());
+
+                    reached_commitment = true;
+                }
+                server::ChainedTxType::Virtual => {
+                    // Continue traversing virtual transactions up the tree.
+                    find_paths_to_commitment(
+                        chained_tx.txid,
+                        chain_map,
+                        current_path,
+                        all_paths,
+                        visited,
+                    )?;
+                }
+                server::ChainedTxType::Unspecified => {
+                    tracing::warn!(
+                        txid = %chained_tx.txid,
+                        "Found unspecified TX type when walking up virtual TX tree. \
+                         Treating it like a virtual TX"
+                    );
+
+                    // Continue traversing virtual transactions up the tree.
+                    find_paths_to_commitment(
+                        chained_tx.txid,
+                        chain_map,
+                        current_path,
+                        all_paths,
+                        visited,
+                    )?;
+                }
+            }
+        }
+
+        if !reached_commitment && chain.spends.is_empty() {
+            return Err(Error::ad_hoc(format!(
+                "dead end reached at TXID {} with no commitment transaction",
+                current_txid
+            )));
+        }
+
+        visited.remove(&current_txid);
+        current_path.pop();
+        Ok(())
+    }
+
+    let mut all_paths = Vec::new();
+    let mut current_path = Vec::new();
+    let mut visited = HashSet::new();
+
+    find_paths_to_commitment(
+        virtual_txid,
+        &chain_map,
+        &mut current_path,
+        &mut all_paths,
+        &mut visited,
+    )?;
+
+    if all_paths.is_empty() {
+        return Err(Error::ad_hoc(format!(
+            "no paths found from virtual TX {virtual_txid} to commitment transaction",
+        )));
+    }
+
+    // Reverse each path so they go from root commitment TX to VTXO.
+    let all_paths: Vec<Vec<Txid>> = all_paths
+        .into_iter()
+        .map(|mut path| {
+            path.reverse();
+            path
+        })
+        .collect();
+
+    Ok(all_paths)
+}
+
+/// The full path from commitment transaction to VTXO. The entire path will need to be published
+/// on-chain to execute a unilateral exit with this VTXO.
+///
+/// We use the word "tree" because a VTXO may come from more than one path i.e. if its corresponding
+/// virtual transaction has more than one input!
+pub struct UnilateralExitTree {
+    /// The commitment transaction from which this VTXO comes from.
+    round_txid: Txid,
+    /// The chains of virtual transactions that lead to a VTXO.
+    ///
+    /// Virtual TXs in a branch are ordered by distance to the root commitment transaction, with
+    /// virtual TXs closest to it appearing first.
+    inner: Vec<Vec<Psbt>>,
+}
+
+impl UnilateralExitTree {
+    pub fn new(round_txid: Txid, virtual_tx_branches: Vec<Vec<Psbt>>) -> Self {
         Self {
-            outpoint,
             round_txid,
-            redeem_transaction: Some(redeem_transaction),
+            inner: virtual_tx_branches,
         }
     }
 
     pub fn round_txid(&self) -> Txid {
         self.round_txid
     }
+
+    pub fn inner(&self) -> &Vec<Vec<Psbt>> {
+        &self.inner
+    }
 }
 
-/// Generate a list of transactions that must be confirmed on the blockchain as a prerequisite to
-/// spending the given `vtxo_inputs`.
-///
-/// For all the `vtxo_inputs` provided, the caller must ensure that the `rounds` argument contains a
-/// matching [`Round`]. Failure to do so will result in an error.
-///
-/// ### Explanation
-///
-/// For all the `vtxo_inputs` that the caller wants to unilaterally convert into UTXOs, we must
-/// first ensure that all the ancestor transactions (AKA the redeem branch) in the VTXO tree have
-/// been confirmed on the blockchain.
-///
-/// For example, given the following basic tree
-///
-/// [Round TX: <VTXO tree Output>]
-///                     |
-///                  [TX A: <Internal node>]
-///                                 |
-///                              [TX B: <VTXO X>]
-///
-/// if `VTXO X` is included in `vtxo_inputs`, the function will return `[TX A, TX B]`.
-///
-/// ### Returns
-///
-/// A list of transactions that must be confirmed before all the `vtxo_inputs` can be spent.
-///
-/// The order of the transactions ensures that a transaction will never appear before an unpublished
-/// parent transaction. This guarantees that the caller can publish the transactions in the given
-/// order.
-///
-/// There are no repeats in the transaction list.
-///
-/// Some of the transactions may have already been published. Thus, the caller may need to skip
-/// publishing certain transactions that have already been published.
-pub fn prepare_vtxo_tree_transactions(
-    vtxos: &[VtxoProvenance],
-    rounds: HashMap<Txid, Round>,
-) -> Result<Vec<Transaction>, Error> {
-    let mut vtxo_trees = HashMap::new();
-    let mut redeem_branches = HashMap::new();
-    for VtxoProvenance {
-        outpoint,
-        round_txid,
-        redeem_transaction,
-    } in vtxos.iter()
-    {
-        let round = rounds
-            .get(round_txid)
-            .ok_or_else(|| Error::ad_hoc(format!("missing info for round {round_txid}")))?;
-
-        // TODO: If this VTXO is an output of a redeem transaction, we should walk back up the chain
-        // of redeem transactions and the VTXO tree to unilaterally off-board this VTXO.
-        if redeem_transaction.is_some() {
-            tracing::warn!(
-                %outpoint,
-                "Spending unconfirmed VTXOs unilaterally is not supported yet. Skipping"
-            );
-
-            continue;
-        }
-
-        let round_psbt = round
-            .round_tx
-            .clone()
-            .ok_or_else(|| Error::ad_hoc("missing round TX"))?;
-
-        let round_tx = round_psbt
-            .clone()
-            .extract_tx()
-            .map_err(Error::transaction)?;
-        let round_txid = round_tx.compute_txid();
-
-        let round_vtxo_tree = round
-            .vtxo_tree
-            .clone()
-            .ok_or_else(|| Error::ad_hoc("missing round VTXO tree"))?;
-        vtxo_trees.entry(round_txid).or_insert(round_vtxo_tree);
-
-        let vtxo_tree = vtxo_trees.get(&round_txid).expect("is there");
-
-        let root = &vtxo_tree.levels[0].nodes[0];
-
-        let vtxo_txid = outpoint.txid;
-        let leaf_node = vtxo_tree
-            .levels
-            .last()
-            .expect("at least one")
-            .nodes
-            .iter()
-            .find(|node| node.txid == vtxo_txid)
-            .expect("leaf node");
-
-        // Build the branch from our VTXO to the root of the VTXO tree.
-        let mut branch = vec![leaf_node];
-        while branch[0].txid != root.txid {
-            let parent_node = vtxo_tree
-                .levels
-                .iter()
-                .find_map(|level| level.nodes.iter().find(|node| node.txid == branch[0].txid))
-                .expect("parent");
-
-            branch = [vec![parent_node], branch].concat()
-        }
-
-        let branch = branch
-            .into_iter()
-            .map(|node| node.tx.clone())
-            .collect::<Vec<_>>();
-
-        redeem_branches.insert(vtxo_txid, (RedeemBranch { branch }, round_psbt.clone()));
-    }
-
-    let mut tx_set = HashSet::new();
-    let mut all_txs = Vec::new();
-    for (redeem_branch, round_psbt) in redeem_branches.values() {
-        for psbt in redeem_branch.branch.iter() {
-            let mut psbt = psbt.clone();
+/// Sign all the transactions needed to commit a VTXO on-chain.
+pub fn sign_unilateral_exit_tree(
+    unilateral_exit_tree: &UnilateralExitTree,
+    round_tx: &Transaction,
+) -> Result<Vec<Vec<Transaction>>, Error> {
+    let mut signed_virtual_tx_branches = Vec::new();
+    for unilateral_exit_branch in unilateral_exit_tree.inner.iter() {
+        let mut signed_unilateral_exit_branch = Vec::new();
+        for virtual_tx in unilateral_exit_branch.iter() {
+            let txid = virtual_tx.unsigned_tx.compute_txid();
+            let mut psbt = virtual_tx.clone();
 
             let vtxo_previous_output = psbt.unsigned_tx.input[VTXO_INPUT_INDEX].previous_output;
 
             let witness_utxo = {
-                redeem_branch
-                    .branch
+                unilateral_exit_branch
                     .iter()
-                    .chain(std::iter::once(round_psbt))
+                    .map(|p| &p.unsigned_tx)
+                    .chain(std::iter::once(round_tx))
                     .find_map(|other_psbt| {
-                        (other_psbt.unsigned_tx.compute_txid() == vtxo_previous_output.txid)
-                            .then_some(
-                                other_psbt.unsigned_tx.output[vtxo_previous_output.vout as usize]
-                                    .clone(),
-                            )
+                        (other_psbt.compute_txid() == vtxo_previous_output.txid).then_some(
+                            other_psbt.output[vtxo_previous_output.vout as usize].clone(),
+                        )
                     })
             }
-            .expect("witness utxo in path");
+            .expect("witness UTXO in path");
 
             psbt.inputs[VTXO_INPUT_INDEX].witness_utxo = Some(witness_utxo);
 
-            let tap_key_sig =
-                psbt.inputs[VTXO_INPUT_INDEX]
-                    .tap_key_sig
-                    .ok_or(Error::transaction(
-                        "missing taproot key spend signature in VTXO transaction",
-                    ))?;
+            if let Some(tap_key_sig) = psbt.inputs[VTXO_INPUT_INDEX].tap_key_sig {
+                tracing::debug!(%txid, "Signing key spend for confirmed VTXO");
 
-            psbt.inputs[VTXO_INPUT_INDEX].final_script_witness =
-                Some(Witness::p2tr_key_spend(&tap_key_sig));
+                psbt.inputs[VTXO_INPUT_INDEX].final_script_witness =
+                    Some(Witness::p2tr_key_spend(&tap_key_sig));
+            } else if !psbt.inputs[VTXO_INPUT_INDEX].tap_script_sigs.is_empty() {
+                tracing::debug!(%txid, "Signing script spend for pre-confirmed VTXO");
+
+                // We assume that there is only one script. TODO: May need to revise this.
+                let tap_scripts = psbt.inputs[VTXO_INPUT_INDEX].tap_scripts.iter().next();
+                let tap_script_sigs = psbt.inputs[VTXO_INPUT_INDEX].tap_script_sigs.values();
+
+                let (control_block, (script, _)) = tap_scripts.ok_or_else(|| {
+                    Error::transaction(format!("missing tapscripts in virtual TX {txid}"))
+                })?;
+
+                // Construct witness: [sig1, sig2, script, control_block].
+                let mut witness = Witness::new();
+
+                // We assume that the signatures are in the correct order. TODO: May need to
+                // revise this.
+                for sig in tap_script_sigs {
+                    witness.push(sig.to_vec());
+                }
+
+                witness.push(script.as_bytes());
+                witness.push(control_block.serialize());
+
+                psbt.inputs[VTXO_INPUT_INDEX].final_script_witness = Some(witness);
+            } else {
+                return Err(Error::transaction(format!(
+                    "missing taproot key spend or script spend data in virtual TX {txid}"
+                )));
+            };
 
             let tx = psbt.clone().extract_tx().map_err(Error::transaction)?;
 
-            let txid = tx.compute_txid();
-            if !tx_set.contains(&txid) {
-                tx_set.insert(txid);
-                all_txs.push(tx);
-            }
+            signed_unilateral_exit_branch.push(tx);
+        }
+        signed_virtual_tx_branches.push(signed_unilateral_exit_branch);
+    }
+
+    Ok(signed_virtual_tx_branches)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedUtxo {
+    pub outpoint: OutPoint,
+    pub amount: Amount,
+    pub address: Address,
+}
+
+#[derive(Debug, Clone)]
+pub struct UtxoCoinSelection {
+    pub selected_utxos: Vec<SelectedUtxo>,
+    pub total_selected: Amount,
+    pub change_amount: Amount,
+}
+
+/// Build an anchor transaction by spending a 0-value P2A output and adding another output to cover
+/// the transaction fees.
+pub fn build_anchor_tx<F>(
+    bumpable_tx: &Transaction,
+    change_address: Address,
+    fee_rate: f64,
+    select_coins_fn: F,
+) -> Result<Psbt, Error>
+where
+    F: FnOnce(Amount) -> Result<UtxoCoinSelection, Error>,
+{
+    let anchor = find_anchor_outpoint(bumpable_tx)?;
+
+    // Estimate for the size of the bump transaction.
+    const P2TR_KEYSPEND_INPUT_WEIGHT: u64 = 57 * 4 + 64; // 292 weight units
+    const NESTED_P2WSH_INPUT_WEIGHT: u64 = 91 * 4 + 3 * 4; // 376 weight units
+    const P2TR_OUTPUT_WEIGHT: u64 = 43 * 4; // 172 weight units
+
+    // We assume only one UTXO will be selected to have a correct estimate.
+    let estimated_weight = Weight::from_wu(
+        NESTED_P2WSH_INPUT_WEIGHT + P2TR_KEYSPEND_INPUT_WEIGHT + P2TR_OUTPUT_WEIGHT,
+    );
+
+    let child_vsize = estimated_weight.to_vbytes_ceil();
+    let package_size = child_vsize + bumpable_tx.weight().to_vbytes_ceil();
+
+    let fee = Amount::from_sat((package_size as f64 * fee_rate).ceil() as u64);
+
+    // Use dependency to select coins to cover the fee.
+    let UtxoCoinSelection {
+        selected_utxos,
+        total_selected,
+        change_amount,
+    } = select_coins_fn(fee)?;
+
+    if total_selected < fee {
+        return Err(Error::coin_select(format!(
+            "insufficient coins selected to cover {fee} fee"
+        )));
+    }
+
+    // Build inputs and outputs.
+    let mut inputs = vec![anchor];
+    let mut sequences = vec![Sequence::MAX];
+
+    for utxo in selected_utxos.iter() {
+        inputs.push(utxo.outpoint);
+        sequences.push(Sequence::MAX);
+    }
+
+    let outputs = vec![TxOut {
+        value: change_amount,
+        script_pubkey: change_address.script_pubkey(),
+    }];
+
+    // Create PSBT.
+    let mut psbt = Psbt::from_unsigned_tx(Transaction {
+        version: transaction::Version::non_standard(3),
+        lock_time: LockTime::ZERO,
+        input: inputs
+            .iter()
+            .zip(sequences.iter())
+            .map(|(outpoint, sequence)| TxIn {
+                previous_output: *outpoint,
+                script_sig: bitcoin::ScriptBuf::new(),
+                sequence: *sequence,
+                witness: Witness::new(),
+            })
+            .collect(),
+        output: outputs,
+    })
+    .map_err(|e| Error::transaction(format!("Failed to create PSBT: {e}")))?;
+
+    // Set witness UTXO for anchor input (first input). The anchor input does not need signing,
+    // hence the empty witness.
+    psbt.inputs[0].witness_utxo = Some(anchor_output());
+    psbt.inputs[0].final_script_witness = Some(Witness::new());
+
+    // Set witness UTXO for the additional inputs (probably just one).
+    for i in 1..psbt.inputs.len() {
+        if let Some(utxo) = selected_utxos.get(i - 1) {
+            psbt.inputs[i].witness_utxo = Some(TxOut {
+                value: utxo.amount,
+                script_pubkey: utxo.address.script_pubkey(),
+            });
         }
     }
 
-    Ok(all_txs)
+    Ok(psbt)
 }
 
-struct RedeemBranch {
-    branch: Vec<Psbt>,
+fn find_anchor_outpoint(tx: &Transaction) -> Result<OutPoint, Error> {
+    let anchor_output_template = anchor_output();
+
+    for (index, output) in tx.output.iter().enumerate() {
+        if output == &anchor_output_template {
+            return Ok(OutPoint {
+                txid: tx.compute_txid(),
+                vout: index as u32,
+            });
+        }
+    }
+
+    Err(Error::transaction("anchor output not found in transaction"))
 }

@@ -1,5 +1,7 @@
+use crate::error::ErrorContext;
 use crate::wallet::BoardingWallet;
 use crate::wallet::OnchainWallet;
+use ark_core::build_anchor_tx;
 use ark_core::generate_incoming_vtxo_transaction_history;
 use ark_core::generate_outgoing_vtxo_transaction_history;
 use ark_core::server;
@@ -7,6 +9,7 @@ use ark_core::server::Round;
 use ark_core::server::VtxoOutPoint;
 use ark_core::ArkAddress;
 use ark_core::ArkTransaction;
+use ark_core::UtxoCoinSelection;
 use ark_core::Vtxo;
 use ark_grpc::VtxoChainResponse;
 use bitcoin::key::Keypair;
@@ -72,10 +75,20 @@ pub use error::Error;
 /// #     async fn broadcast(&self, tx: &Transaction) -> Result<(), Error> {
 /// #         unimplemented!()
 /// #     }
+/// #
+/// #     async fn get_fee_rate(&self) -> Result<f64, Error> {
+/// #         unimplemented!()
+/// #     }
+/// #
+/// #     async fn broadcast_package(
+/// #         &self,
+/// #         txs: &[&Transaction],
+/// #     ) -> Result<(), Error> {
+/// #         unimplemented!()
+/// #     }
 /// # }
 ///
 /// struct MyWallet {}
-///
 /// # impl OnchainWallet for MyWallet where {
 /// #
 /// #     fn get_onchain_address(&self) -> Result<Address, Error> {
@@ -97,10 +110,14 @@ pub use error::Error;
 /// #     fn sign(&self, psbt: &mut Psbt) -> Result<bool, Error> {
 /// #         unimplemented!()
 /// #     }
+/// #
+/// #     fn select_coins(&self, target_amount: Amount) -> Result<UtxoCoinSelection, Error> {
+/// #         unimplemented!()
+/// #     }
 /// # }
 /// #
-/// struct InMemoryDb {}
 ///
+/// struct InMemoryDb {}
 /// # impl Persistence for InMemoryDb {
 /// #
 /// #     fn save_boarding_output(
@@ -128,7 +145,6 @@ pub use error::Error;
 /// #         &self,
 /// #         server_pk: XOnlyPublicKey,
 /// #         exit_delay: bitcoin::Sequence,
-/// #         descriptor_template: &str,
 /// #         network: Network,
 /// #     ) -> Result<BoardingOutput, Error> {
 /// #         unimplemented!()
@@ -262,6 +278,13 @@ pub trait Blockchain {
     ) -> impl Future<Output = Result<SpendStatus, Error>> + Send;
 
     fn broadcast(&self, tx: &Transaction) -> impl Future<Output = Result<(), Error>> + Send;
+
+    fn get_fee_rate(&self) -> impl Future<Output = Result<f64, Error>> + Send;
+
+    fn broadcast_package(
+        &self,
+        txs: &[&Transaction],
+    ) -> impl Future<Output = Result<(), Error>> + Send;
 }
 
 impl<B, W> OfflineClient<B, W>
@@ -351,6 +374,10 @@ where
         )?;
 
         Ok(boarding_output.address().clone())
+    }
+
+    pub fn get_onchain_address(&self) -> Result<Address, Error> {
+        self.inner.wallet.get_onchain_address()
     }
 
     pub fn get_boarding_addresses(&self) -> Result<Vec<Address>, Error> {
@@ -574,5 +601,34 @@ where
 
     fn blockchain(&self) -> &B {
         &self.inner.blockchain
+    }
+
+    /// Use the P2A output of a transaction to bump its transaction fee with a child transaction.
+    pub async fn bump_tx(&self, parent: &Transaction) -> Result<Transaction, Error> {
+        let fee_rate = self.blockchain().get_fee_rate().await?;
+        let change_address = self.inner.wallet.get_onchain_address()?;
+
+        // Create a closure that converts CoinSelectionResult to UtxoCoinSelection
+        let select_coins_fn =
+            |target_amount: Amount| -> Result<UtxoCoinSelection, ark_core::Error> {
+                self.inner.wallet.select_coins(target_amount).map_err(|e| {
+                    ark_core::Error::ad_hoc(format!("failed to select coins for anchor TX: {e}"))
+                })
+            };
+
+        // Build the PSBT using ark-core (includes witness UTXO setup)
+        let mut psbt = build_anchor_tx(parent, change_address, fee_rate, select_coins_fn)
+            .map_err(|e| Error::ad_hoc(e.to_string()))?;
+
+        // Sign the transaction
+        self.inner
+            .wallet
+            .sign(&mut psbt)
+            .context("failed to sign bump TX")?;
+
+        // Extract the final transaction
+        let tx = psbt.extract_tx().map_err(Error::ad_hoc)?;
+
+        Ok(tx)
     }
 }

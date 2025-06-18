@@ -13,6 +13,7 @@ env:
   CARGO_TERM_COLOR: always
   ARK_GO_DIR: ./ark-go
   ARKD_DIR: ./ark-go/ark/server
+  ARKD_WALLET_DIR: ./ark-go/ark/pkg/ark-wallet
 
 jobs:
   build-tests:
@@ -93,33 +94,29 @@ jobs:
         run: |
           just arkd-checkout ${{ inputs.arkd-version }}
 
-      - name: Patch makefile for longer rounds
-        run: |
-          just arkd-patch-makefile
-
       - name: Set up Go for arkd
         uses: actions/setup-go@v4
         with:
           go-version: '>=1.23.1'
 
-      - name: Run go work sync
+      - name: Run go work sync for arkd
         run: |
           cd $ARKD_DIR
           go work sync
 
-      - name: Build arkd server
+      - name: Build arkd
         run: |
           just arkd-build
 
-      - name: Run arkd server
+      - name: Run arkd-wallet
+        run: |
+          just arkd-wallet-run
+
+      - name: Run arkd
         run: |
           just arkd-run
 
-      - name: Init arkd server
-        run: |
-          just arkd-init
-
-      - name: Fund arkd server
+      - name: Fund arkd
         run: |
           just arkd-fund 20
           # Wait for arkd to catch up with the chain
@@ -134,6 +131,17 @@ jobs:
       - name: Cleanup Nigiri
         if: always()
         run: nigiri stop --delete
+
+      - name: Print arkd-wallet logs on failure
+        if: failure()
+        run: |
+          if [ -f arkd-wallet.log ]; then
+            echo "=== arkd-wallet.log contents ==="
+            cat arkd-wallet.log
+            echo "=== End of arkd-wallet.log ==="
+          else
+            echo "arkd-wallet.log file not found"
+          fi
 
       - name: Print arkd logs on failure
         if: failure()

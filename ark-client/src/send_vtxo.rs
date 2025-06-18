@@ -83,7 +83,8 @@ where
             sign_redeem_transaction(sign_fn, &mut redeem_psbt, &vtxo_inputs, i)?;
         }
 
-        self.network_client()
+        let redeem_psbt = self
+            .network_client()
             .submit_redeem_transaction(redeem_psbt.clone())
             .await
             .map_err(Error::ark_server)

@@ -6,9 +6,11 @@ use crate::wallet::BoardingWallet;
 use crate::wallet::OnchainWallet;
 use crate::Blockchain;
 use crate::Client;
+use ark_core::build_unilateral_exit_tree_txids;
 use ark_core::unilateral_exit;
 use ark_core::unilateral_exit::create_unilateral_exit_transaction;
-use ark_core::unilateral_exit::prepare_vtxo_tree_transactions;
+use ark_core::unilateral_exit::sign_unilateral_exit_tree;
+use ark_core::unilateral_exit::UnilateralExitTree;
 use backon::ExponentialBuilder;
 use backon::Retryable;
 use bitcoin::Address;
@@ -16,8 +18,7 @@ use bitcoin::Amount;
 use bitcoin::Transaction;
 use bitcoin::TxOut;
 use bitcoin::Txid;
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::HashSet;
 
 // TODO: We should not _need_ to connect to the Ark server to perform unilateral exit. Currently we
 // do talk to the Ark server for simplicity.
@@ -26,60 +27,123 @@ where
     B: Blockchain,
     W: BoardingWallet + OnchainWallet,
 {
-    /// Publish all the relevant transactions in the VTXO tree to get our VTXOs on chain.
-    pub async fn commit_vtxos_on_chain(&self) -> Result<(), Error> {
-        let spendable_vtxos = self.spendable_vtxos().await?;
+    /// Build the unilateral exit transaction tree for all spendable VTXOs.
+    ///
+    /// ### Returns
+    ///
+    /// The tree as a `Vec<Vec<Transaction>>`, where each branch represents a path from
+    /// commitment transaction output to a spendable VTXO. Every transaction is fully signed,
+    /// but requires fee bumping through a P2A output.
+    pub async fn build_unilateral_exit_trees(&self) -> Result<Vec<Vec<Transaction>>, Error> {
+        let spendable_vtxos = self
+            .spendable_vtxos()
+            .await
+            .context("failed to get spendable VTXOs")?;
 
         let network_client = &self.network_client();
-        let vtxos = spendable_vtxos
-            .into_iter()
-            .flat_map(|(vtxo_outpoints, _)| {
-                vtxo_outpoints
-                    .into_iter()
-                    .map(|vtxo_outpoint| match vtxo_outpoint.redeem_tx {
-                        Some(redeem_transaction) => {
-                            unilateral_exit::VtxoProvenance::new_unconfirmed(
-                                vtxo_outpoint.outpoint,
-                                vtxo_outpoint.round_txid,
-                                redeem_transaction,
-                            )
-                        }
-                        None => unilateral_exit::VtxoProvenance::new(
-                            vtxo_outpoint.outpoint,
-                            vtxo_outpoint.round_txid,
-                        ),
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
+        let mut unilateral_exit_trees = Vec::new();
 
-        let mut rounds = HashMap::new();
-        for vtxo in vtxos.iter() {
-            let round_txid = vtxo.round_txid();
-            if let Entry::Vacant(e) = rounds.entry(round_txid) {
-                let round = network_client
-                    .get_round(round_txid.to_string())
+        // For reach spendable VTXO, generate its unilateral exit tree.
+        for (virtual_tx_outpoints, _) in spendable_vtxos {
+            for virtual_tx_outpoint in virtual_tx_outpoints {
+                let vtxo_chain_response = self
+                    .network_client()
+                    .get_vtxo_chain(Some(virtual_tx_outpoint.outpoint), None)
                     .await
-                    .map_err(Error::ark_server)?
-                    .ok_or_else(|| Error::ad_hoc(format!("could not find round {round_txid}")))?;
+                    .map_err(Error::ad_hoc)
+                    .context("failed to get VTXO chain")?;
 
-                e.insert(round);
+                let paths = build_unilateral_exit_tree_txids(
+                    &vtxo_chain_response.chains,
+                    virtual_tx_outpoint.outpoint.txid,
+                )?;
+
+                // We don't want to fetch transactions more than once.
+                let txs = HashSet::<Txid>::from_iter(paths.concat().into_iter());
+
+                let virtual_txs_response = self
+                    .network_client()
+                    .get_virtual_txs(txs.iter().map(|tx| tx.to_string()).collect(), None)
+                    .await
+                    .map_err(Error::ad_hoc)
+                    .context("failed to get virtual TXs")?;
+
+                let paths = paths
+                    .into_iter()
+                    .map(|path| {
+                        path.into_iter()
+                            .map(|txid| {
+                                virtual_txs_response
+                                    .txs
+                                    .iter()
+                                    .find(|t| t.unsigned_tx.compute_txid() == txid)
+                                    .cloned()
+                                    .ok_or_else(|| {
+                                        Error::ad_hoc("no PSBT found for virtual TX {txid}")
+                                    })
+                            })
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let unilateral_exit_tree =
+                    UnilateralExitTree::new(virtual_tx_outpoint.round_txid, paths);
+
+                unilateral_exit_trees.push(unilateral_exit_tree);
             }
         }
 
-        let off_board_txs =
-            prepare_vtxo_tree_transactions(vtxos.as_slice(), rounds).map_err(Error::from)?;
+        let mut branches: Vec<Vec<Transaction>> = Vec::new();
+        for unilateral_exit_tree in unilateral_exit_trees {
+            let round_txid = unilateral_exit_tree.round_txid();
 
+            let round_tx = network_client
+                .get_round(round_txid.to_string())
+                .await
+                .map_err(Error::ark_server)?
+                .ok_or_else(|| Error::ad_hoc(format!("could not find round {round_txid}")))?;
+            let round_tx = round_tx.round_tx.ok_or_else(|| {
+                Error::ad_hoc(format!("round {round_txid} is missing transaction data"))
+            })?;
+
+            let signed_unilateral_exit_tree =
+                sign_unilateral_exit_tree(&unilateral_exit_tree, &round_tx)?;
+            branches.extend(signed_unilateral_exit_tree);
+        }
+
+        Ok(branches)
+    }
+
+    /// Broadcast the next unconfirmed transaction in a branch, skipping transactions that are
+    /// already on-chain.
+    ///
+    /// ### Returns
+    ///
+    /// `Ok(Some(txid))` if a transaction was broadcast, `Ok(None)` if all are confirmed.
+    pub async fn broadcast_next_unilateral_exit_node(
+        &self,
+        branch: &[Transaction],
+    ) -> Result<Option<Txid>, Error> {
         let blockchain = &self.blockchain();
 
-        let off_board_txs_len = off_board_txs.len();
-        for (i, tx) in off_board_txs.iter().enumerate() {
-            let txid = tx.compute_txid();
+        for parent_tx in branch {
+            let txid = parent_tx.compute_txid();
 
+            // Check if this transaction is already on-chain.
             let is_not_published = blockchain.find_tx(&txid).await?.is_none();
             if is_not_published {
-                tracing::info!(%txid, "Broadcasting VTXO transaction");
-                let broadcast = || async { blockchain.broadcast(tx).await };
+                // This transaction is not on-chain yet, so broadcast it.
+
+                let child_tx = self.bump_tx(parent_tx).await?;
+
+                tracing::info!(
+                    %txid,
+                    bump_txid = %child_tx.compute_txid(),
+                    "Broadcasting unilateral exit TX"
+                );
+
+                let broadcast =
+                    || async { blockchain.broadcast_package(&[parent_tx, &child_tx]).await };
 
                 broadcast
                     .retry(ExponentialBuilder::default().with_max_times(5))
@@ -93,11 +157,18 @@ where
                     .await
                     .with_context(|| format!("Failed to broadcast VTXO transaction {txid}"))?;
 
-                tracing::info!(%txid, i, total_txs = off_board_txs_len, "Broadcasted VTXO transaction");
+                tracing::info!(
+                    %txid,
+                    bump_txid = %child_tx.compute_txid(),
+                    "Broadcasted VTXO transaction"
+                );
+
+                return Ok(Some(txid));
             }
         }
 
-        Ok(())
+        // All transactions in the branch are already on-chain
+        Ok(None)
     }
 
     /// Spend boarding outputs and VTXOs to an _on-chain_ address.
