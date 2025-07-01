@@ -12,7 +12,8 @@ jobs:
       matrix:
         arkd-version: [
           '6246f89716f7795801c2d453a02ec911898c4e15',
-          'master'
+          'master',
+          'next-version'
           # Add more versions as needed
         ]
 
