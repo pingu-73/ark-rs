@@ -277,7 +277,7 @@ pub fn build_unilateral_exit_tree_txids(
 
         // Safety check to reject cycles.
         if visited.contains(&current_txid) {
-            return Err(Error::ad_hoc("chain traversal lead to cycle"));
+            return Err(Error::ad_hoc("chain traversal led to cycle"));
         }
         visited.insert(current_txid);
 
@@ -291,8 +291,15 @@ pub fn build_unilateral_exit_tree_txids(
         // Check if any of the transactions spent by this virtual TX are the commitment transaction.
         let mut reached_commitment = false;
 
-        for chained_tx in &chain.spends {
-            match chained_tx.tx_type {
+        for &parent_txid in &chain.spends {
+            // Look up the parent transaction's chain to get its type
+            let parent_chain = chain_map.get(&parent_txid).ok_or_else(|| {
+                Error::ad_hoc(format!(
+                    "could not find VtxoChain for parent TXID: {parent_txid}",
+                ))
+            })?;
+
+            match parent_chain.tx_type {
                 server::ChainedTxType::Commitment => {
                     // We've reached our destination.
                     all_paths.push(current_path.clone());
@@ -302,7 +309,7 @@ pub fn build_unilateral_exit_tree_txids(
                 server::ChainedTxType::Virtual => {
                     // Continue traversing virtual transactions up the tree.
                     find_paths_to_commitment(
-                        chained_tx.txid,
+                        parent_txid,
                         chain_map,
                         current_path,
                         all_paths,
@@ -311,14 +318,33 @@ pub fn build_unilateral_exit_tree_txids(
                 }
                 server::ChainedTxType::Unspecified => {
                     tracing::warn!(
-                        txid = %chained_tx.txid,
+                        txid = %parent_txid,
                         "Found unspecified TX type when walking up virtual TX tree. \
                          Treating it like a virtual TX"
                     );
 
                     // Continue traversing virtual transactions up the tree.
                     find_paths_to_commitment(
-                        chained_tx.txid,
+                        parent_txid,
+                        chain_map,
+                        current_path,
+                        all_paths,
+                        visited,
+                    )?;
+                }
+                server::ChainedTxType::Tree | server::ChainedTxType::Checkpoint => {
+                    // These types might also need to be handled - treating them like virtual for
+                    // now
+                    tracing::warn!(
+                        txid = %parent_txid,
+                        tx_type = ?parent_chain.tx_type,
+                        "Found Tree or Checkpoint TX type when walking up virtual TX tree. \
+                         Treating it like a virtual TX"
+                    );
+
+                    // Continue traversing virtual transactions up the tree.
+                    find_paths_to_commitment(
+                        parent_txid,
                         chain_map,
                         current_path,
                         all_paths,

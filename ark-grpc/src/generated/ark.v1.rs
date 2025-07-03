@@ -1197,11 +1197,7 @@ pub struct GetVtxoChainRequest {
 pub struct GetVtxoChainResponse {
     #[prost(message, repeated, tag = "1")]
     pub chain: ::prost::alloc::vec::Vec<IndexerChain>,
-    #[prost(int32, tag = "2")]
-    pub depth: i32,
-    #[prost(string, tag = "3")]
-    pub root_commitment_txid: ::prost::alloc::string::String,
-    #[prost(message, optional, tag = "4")]
+    #[prost(message, optional, tag = "2")]
     pub page: ::core::option::Option<IndexerPageResponse>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1283,17 +1279,13 @@ pub struct IndexerVtxo {
 pub struct IndexerChain {
     #[prost(string, tag = "1")]
     pub txid: ::prost::alloc::string::String,
-    #[prost(message, repeated, tag = "2")]
-    pub spends: ::prost::alloc::vec::Vec<IndexerChainedTx>,
-    #[prost(int64, tag = "3")]
+    #[prost(int64, tag = "2")]
     pub expires_at: i64,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct IndexerChainedTx {
-    #[prost(string, tag = "1")]
-    pub txid: ::prost::alloc::string::String,
-    #[prost(enumeration = "IndexerChainedTxType", tag = "2")]
+    #[prost(enumeration = "IndexerChainedTxType", tag = "3")]
     pub r#type: i32,
+    /// txids of the transactions in the chain used as input of the current tx
+    #[prost(string, repeated, tag = "4")]
+    pub spends: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct IndexerTxHistoryRecord {
@@ -1408,8 +1400,10 @@ impl IndexerTxType {
 #[repr(i32)]
 pub enum IndexerChainedTxType {
     Unspecified = 0,
-    Virtual = 1,
-    Commitment = 2,
+    Commitment = 1,
+    Ark = 2,
+    Tree = 3,
+    Checkpoint = 4,
 }
 impl IndexerChainedTxType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1419,16 +1413,20 @@ impl IndexerChainedTxType {
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "INDEXER_CHAINED_TX_TYPE_UNSPECIFIED",
-            Self::Virtual => "INDEXER_CHAINED_TX_TYPE_VIRTUAL",
             Self::Commitment => "INDEXER_CHAINED_TX_TYPE_COMMITMENT",
+            Self::Ark => "INDEXER_CHAINED_TX_TYPE_ARK",
+            Self::Tree => "INDEXER_CHAINED_TX_TYPE_TREE",
+            Self::Checkpoint => "INDEXER_CHAINED_TX_TYPE_CHECKPOINT",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "INDEXER_CHAINED_TX_TYPE_UNSPECIFIED" => Some(Self::Unspecified),
-            "INDEXER_CHAINED_TX_TYPE_VIRTUAL" => Some(Self::Virtual),
             "INDEXER_CHAINED_TX_TYPE_COMMITMENT" => Some(Self::Commitment),
+            "INDEXER_CHAINED_TX_TYPE_ARK" => Some(Self::Ark),
+            "INDEXER_CHAINED_TX_TYPE_TREE" => Some(Self::Tree),
+            "INDEXER_CHAINED_TX_TYPE_CHECKPOINT" => Some(Self::Checkpoint),
             _ => None,
         }
     }

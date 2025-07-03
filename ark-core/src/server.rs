@@ -288,22 +288,20 @@ pub struct CommitmentTransaction {
 
 pub struct VtxoChains {
     pub inner: Vec<VtxoChain>,
-    pub root_commitment_txid: Txid,
 }
 
 pub struct VtxoChain {
     pub txid: Txid,
-    pub spends: Vec<ChainedTx>,
+    pub tx_type: ChainedTxType,
+    pub spends: Vec<Txid>,
     pub expires_at: i64,
 }
 
-pub struct ChainedTx {
-    pub txid: Txid,
-    pub tx_type: ChainedTxType,
-}
-
+#[derive(Debug)]
 pub enum ChainedTxType {
     Commitment,
+    Tree,
+    Checkpoint,
     Virtual,
     Unspecified,
 }

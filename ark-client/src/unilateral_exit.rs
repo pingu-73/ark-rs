@@ -68,6 +68,11 @@ where
                 // We don't want to fetch transactions more than once.
                 let txs = HashSet::<Txid>::from_iter(paths.concat().into_iter());
 
+                // FIXME: Checkpoint transactions are not being returned here. Also manually tested
+                // with REST API:
+                //
+                // curl -X GET "http://localhost:7070/v1/virtualTx/txid?page.size=10&page.index=0" -H "Accept: application/json"
+
                 let virtual_txs_response = self
                     .network_client()
                     .get_virtual_txs(txs.iter().map(|tx| tx.to_string()).collect(), None)
@@ -86,7 +91,9 @@ where
                                     .find(|t| t.unsigned_tx.compute_txid() == txid)
                                     .cloned()
                                     .ok_or_else(|| {
-                                        Error::ad_hoc("no PSBT found for virtual TX {txid}")
+                                        Error::ad_hoc(format!(
+                                            "no PSBT found for virtual TX {txid}"
+                                        ))
                                     })
                             })
                             .collect::<Result<Vec<_>, _>>()

@@ -9,6 +9,7 @@ use crate::generated::ark::v1::GetInfoRequest;
 use crate::generated::ark::v1::GetTransactionHistoryRequest;
 use crate::generated::ark::v1::GetTransactionsStreamRequest;
 use crate::generated::ark::v1::GetVtxosRequest;
+use crate::generated::ark::v1::IndexerChainedTxType;
 use crate::generated::ark::v1::Outpoint;
 use crate::generated::ark::v1::RegisterIntentRequest;
 use crate::generated::ark::v1::SubmitSignedForfeitTxsRequest;
@@ -21,7 +22,6 @@ use ark_core::server::BatchFinalizationEvent;
 use ark_core::server::BatchFinalizedEvent;
 use ark_core::server::BatchStartedEvent;
 use ark_core::server::BatchTreeEventType;
-use ark_core::server::ChainedTx;
 use ark_core::server::ChainedTxType;
 use ark_core::server::CommitmentTransaction;
 use ark_core::server::FinalizeOffchainTxResponse;
@@ -774,15 +774,16 @@ impl TryFrom<Outpoint> for OutPoint {
 
 pub struct VtxoChainResponse {
     pub chains: VtxoChains,
-    pub depth: i32,
     pub page: Option<IndexerPage>,
 }
 
+#[derive(Debug)]
 pub struct VirtualTxsResponse {
     pub txs: Vec<Psbt>,
     pub page: Option<IndexerPage>,
 }
 
+#[derive(Debug)]
 pub struct IndexerPage {
     pub current: i32,
     pub next: i32,
@@ -799,15 +800,8 @@ impl TryFrom<generated::ark::v1::GetVtxoChainResponse> for VtxoChainResponse {
             .map(VtxoChain::try_from)
             .collect::<Result<Vec<_>, Error>>()?;
 
-        let root_commitment_txid =
-            Txid::from_str(value.root_commitment_txid.as_str()).map_err(Error::conversion)?;
-
         Ok(VtxoChainResponse {
-            chains: VtxoChains {
-                inner: chains,
-                root_commitment_txid,
-            },
-            depth: value.depth,
+            chains: VtxoChains { inner: chains },
             page: value
                 .page
                 .map(IndexerPage::try_from)
@@ -855,11 +849,24 @@ impl TryFrom<&generated::ark::v1::IndexerChain> for VtxoChain {
         let spends = value
             .spends
             .iter()
-            .map(ChainedTx::try_from)
+            .map(|txid| {
+                // Handle the case where txid might be 66 bytes long by trimming the last 2 bytes.
+                let txid_str = if txid.len() == 66 { &txid[..64] } else { txid };
+                txid_str.parse().map_err(Error::conversion)
+            })
             .collect::<Result<Vec<_>, Error>>()?;
+
+        let tx_type = match value.r#type() {
+            IndexerChainedTxType::Unspecified => ChainedTxType::Unspecified,
+            IndexerChainedTxType::Commitment => ChainedTxType::Commitment,
+            IndexerChainedTxType::Ark => ChainedTxType::Virtual,
+            IndexerChainedTxType::Tree => ChainedTxType::Tree,
+            IndexerChainedTxType::Checkpoint => ChainedTxType::Checkpoint,
+        };
 
         Ok(VtxoChain {
             txid: value.txid.parse().map_err(Error::conversion)?,
+            tx_type,
             spends,
             expires_at: value.expires_at,
         })
@@ -873,28 +880,6 @@ impl From<generated::ark::v1::IndexerPageResponse> for IndexerPage {
             next: value.next,
             total: value.total,
         }
-    }
-}
-
-impl TryFrom<&generated::ark::v1::IndexerChainedTx> for ChainedTx {
-    type Error = Error;
-
-    fn try_from(value: &generated::ark::v1::IndexerChainedTx) -> Result<Self, Self::Error> {
-        let tx_type = match value.r#type {
-            0 => ChainedTxType::Unspecified,
-            1 => ChainedTxType::Virtual,
-            2 => ChainedTxType::Commitment,
-            n => {
-                return Err(Error::conversion(format!(
-                    "unsupported chained TX type: {n}"
-                )))
-            }
-        };
-
-        Ok(ChainedTx {
-            txid: Txid::from_str(value.txid.as_str()).map_err(Error::conversion)?,
-            tx_type,
-        })
     }
 }
 

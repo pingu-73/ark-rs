@@ -231,9 +231,7 @@ message GetVtxoChainRequest {
 }
 message GetVtxoChainResponse {
   repeated IndexerChain chain = 1;
-  int32 depth = 2;
-  string root_commitment_txid = 3;
-  IndexerPageResponse page = 4;
+  IndexerPageResponse page = 2;
 }
 
 message GetVirtualTxsRequest {
@@ -285,13 +283,10 @@ message IndexerVtxo {
 
 message IndexerChain {
   string txid = 1;
-  repeated IndexerChainedTx spends = 2;
-  int64 expires_at = 3;
-}
-
-message IndexerChainedTx {
-  string txid = 1;
-  IndexerChainedTxType type = 2;
+  int64 expires_at = 2;
+  IndexerChainedTxType type = 3;
+  // txids of the transactions in the chain used as input of the current tx
+  repeated string spends = 4;
 }
 
 message IndexerTxHistoryRecord {
@@ -314,8 +309,10 @@ enum IndexerTxType {
 
 enum IndexerChainedTxType {
   INDEXER_CHAINED_TX_TYPE_UNSPECIFIED = 0;
-  INDEXER_CHAINED_TX_TYPE_VIRTUAL = 1;
-  INDEXER_CHAINED_TX_TYPE_COMMITMENT = 2;
+  INDEXER_CHAINED_TX_TYPE_COMMITMENT = 1;
+  INDEXER_CHAINED_TX_TYPE_ARK = 2;
+  INDEXER_CHAINED_TX_TYPE_TREE = 3;
+  INDEXER_CHAINED_TX_TYPE_CHECKPOINT = 4;
 }
 
 message IndexerPageRequest {
