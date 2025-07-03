@@ -221,6 +221,9 @@ arkd-wallet-kill:
     fi
     [ ! -e "{{ arkd_wallet_logs }}" ] || mv -f {{ arkd_wallet_logs }} {{ arkd_wallet_logs }}.old
 
+# Restart `arkd-wallet` and `arkd`.
+arkd-restart: arkd-kill arkd-wallet-kill arkd-wallet-run arkd-run
+
 # Wipe `arkd` data directory.
 arkd-wipe:
     @echo Clearing arkd in $ARKD_DIR/data
