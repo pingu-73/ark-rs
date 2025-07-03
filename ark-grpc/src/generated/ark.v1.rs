@@ -96,9 +96,6 @@ pub struct BatchFinalizationEvent {
     pub id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub commitment_tx: ::prost::alloc::string::String,
-    /// vtxo outpoint encoded as string -> connector outpoint
-    #[prost(map = "string, message", tag = "3")]
-    pub connectors_index: ::std::collections::HashMap<::prost::alloc::string::String, Outpoint>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchFinalizedEvent {
@@ -258,8 +255,11 @@ pub struct SubmitSignedForfeitTxsRequest {
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct SubmitSignedForfeitTxsResponse {}
-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
-pub struct GetEventStreamRequest {}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GetEventStreamRequest {
+    #[prost(string, repeated, tag = "1")]
+    pub topics: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetEventStreamResponse {
     #[prost(

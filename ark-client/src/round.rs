@@ -15,8 +15,8 @@ use ark_core::round::sign_vtxo_tree;
 use ark_core::round::NonceKps;
 use ark_core::server::BatchTreeEventType;
 use ark_core::server::RoundStreamEvent;
-use ark_core::server::TxGraph;
 use ark_core::ArkAddress;
+use ark_core::TxGraph;
 use backon::ExponentialBuilder;
 use backon::Retryable;
 use bitcoin::hashes::sha256;
@@ -357,7 +357,17 @@ where
 
         let mut round_id: Option<String> = None;
 
-        let mut stream = network_client.get_event_stream().await?;
+        let topics = vtxo_input_outpoints
+            .iter()
+            .map(ToString::to_string)
+            .chain(
+                own_cosigner_pks
+                    .iter()
+                    .map(|pk| pk.serialize().to_lower_hex_string()),
+            )
+            .collect();
+
+        let mut stream = network_client.get_event_stream(topics).await?;
 
         let (ark_server_pk, _) = server_info.pk.x_only_public_key();
 
@@ -481,7 +491,11 @@ where
                         let chunks = vtxo_graph_chunks.take().ok_or(Error::ark_server(
                             "received tree signing started event without VTXO graph chunks",
                         ))?;
-                        vtxo_graph = Some(TxGraph::new(chunks)?);
+                        vtxo_graph = Some(
+                            TxGraph::new(chunks)
+                                .map_err(Error::from)
+                                .context("failed to build VTXO graph before generating nonces")?,
+                        );
 
                         tracing::info!(round_id = e.id, "Round signing started");
 
@@ -554,7 +568,9 @@ where
                                     "received tree nonces aggregated event without VTXO graph chunks",
                                 ))?;
 
-                                &TxGraph::new(chunks)?
+                                &TxGraph::new(chunks)
+                                    .map_err(Error::from)
+                                    .context("failed to build VTXO graph before tree signing")?
                             }
                         };
 
@@ -598,15 +614,18 @@ where
                                 connectors_graph_chunks.take().ok_or(Error::ark_server(
                                     "received batch finalization event without connectors",
                                 ))?;
-                            let connectors_graph = TxGraph::new(chunks)?;
+
+                            let connectors_graph =
+                                TxGraph::new(chunks).map_err(Error::from).context(
+                                    "failed to build connectors graph before signing forfeit TXs",
+                                )?;
 
                             tracing::debug!(round_id = e.id, "Round finalization started");
 
                             create_and_sign_forfeit_txs(
                                 self.kp(),
                                 vtxo_inputs.as_slice(),
-                                &connectors_graph,
-                                &e.connectors_index,
+                                &connectors_graph.leaves(),
                                 &server_info.forfeit_address,
                                 server_info.dust,
                             )

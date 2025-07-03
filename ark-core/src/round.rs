@@ -4,10 +4,10 @@ use crate::conversions::to_musig_pk;
 use crate::internal_node::VtxoTreeInternalNodeScript;
 use crate::server::NoncePks;
 use crate::server::PartialSigTree;
-use crate::server::TxGraph;
 use crate::BoardingOutput;
 use crate::Error;
 use crate::ErrorContext;
+use crate::TxGraph;
 use crate::Vtxo;
 use crate::VTXO_INPUT_INDEX;
 use bitcoin::absolute::LockTime;
@@ -344,8 +344,7 @@ pub fn create_and_sign_forfeit_txs(
     // `Sign` trait, so that the caller can find the secret key for the given `VtxoInput`.
     kp: &Keypair,
     vtxo_inputs: &[VtxoInput],
-    connectors_graph: &TxGraph,
-    connector_index: &HashMap<OutPoint, OutPoint>,
+    connectors_leaves: &[&Psbt],
     server_forfeit_address: &Address,
     // As defined by the server.
     dust: Amount,
@@ -356,6 +355,8 @@ pub fn create_and_sign_forfeit_txs(
     let secp = Secp256k1::new();
 
     let connector_amount = dust;
+
+    let connector_index = derive_vtxo_connector_map(vtxo_inputs, connectors_leaves)?;
 
     let mut signed_forfeit_psbts = Vec::new();
     for VtxoInput {
@@ -376,16 +377,16 @@ pub fn create_and_sign_forfeit_txs(
             ))
         })?;
 
-        let connector_node = connectors_graph
-            .find(&connector_outpoint.txid)
+        let connector_psbt = connectors_leaves
+            .iter()
+            .find(|l| l.unsigned_tx.compute_txid() == connector_outpoint.txid)
             .ok_or_else(|| {
                 Error::ad_hoc(format!(
                     "connector PSBT missing for VTXO outpoint {vtxo_outpoint}"
                 ))
             })?;
 
-        let connector_output = connector_node
-            .root()
+        let connector_output = connector_psbt
             .unsigned_tx
             .output
             .get(connector_outpoint.vout as usize)
@@ -552,6 +553,59 @@ where
     }
 
     Ok(())
+}
+
+/// Build a map between VTXOs and their corresponding connector outputs.
+fn derive_vtxo_connector_map(
+    vtxo_inputs: &[VtxoInput],
+    connectors_leaves: &[&Psbt],
+) -> Result<HashMap<OutPoint, OutPoint>, Error> {
+    // Collect all connector outpoints (non-anchor outputs).
+    let mut connector_outpoints = Vec::new();
+    for psbt in connectors_leaves.iter() {
+        for (vout, output) in psbt.unsigned_tx.output.iter().enumerate() {
+            // Skip anchor outputs.
+            if output.value == Amount::ZERO {
+                continue;
+            }
+            connector_outpoints.push(OutPoint {
+                txid: psbt.unsigned_tx.compute_txid(),
+                vout: vout as u32,
+            });
+        }
+    }
+
+    // Sort connector outpoints for deterministic ordering
+    connector_outpoints.sort_by(|a, b| a.txid.cmp(&b.txid).then(a.vout.cmp(&b.vout)));
+
+    // Get VTXO outpoints that need forfeiting (excluding recoverable ones).
+    let mut vtxo_outpoints = Vec::new();
+    for vtxo_input in vtxo_inputs.iter() {
+        if !vtxo_input.is_recoverable {
+            vtxo_outpoints.push(vtxo_input.outpoint);
+        }
+    }
+
+    // Sort VTXO outpoints for deterministic ordering.
+    vtxo_outpoints.sort_by(|a, b| a.txid.cmp(&b.txid).then(a.vout.cmp(&b.vout)));
+
+    // Ensure we have matching counts.
+    if vtxo_outpoints.len() != connector_outpoints.len() {
+        return Err(Error::ad_hoc(format!(
+            "mismatch between VTXO count ({}) and connector count ({})",
+            vtxo_outpoints.len(),
+            connector_outpoints.len()
+        )));
+    }
+
+    // Create mapping by position.
+    let mut map = HashMap::new();
+    for (vtxo_outpoint, connector_outpoint) in vtxo_outpoints.iter().zip(connector_outpoints.iter())
+    {
+        map.insert(*vtxo_outpoint, *connector_outpoint);
+    }
+
+    Ok(map)
 }
 
 fn extract_cosigner_pks_from_vtxo_psbt(psbt: &Psbt) -> Result<Vec<PublicKey>, Error> {

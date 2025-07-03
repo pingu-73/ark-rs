@@ -18,13 +18,13 @@ use ark_core::round::sign_vtxo_tree;
 use ark_core::server;
 use ark_core::server::BatchTreeEventType;
 use ark_core::server::RoundStreamEvent;
-use ark_core::server::TxGraph;
 use ark_core::server::VtxoOutPoint;
 use ark_core::vtxo::list_virtual_tx_outpoints;
 use ark_core::vtxo::VirtualTxOutpoints;
 use ark_core::ArkAddress;
 use ark_core::BoardingOutput;
 use ark_core::ExplorerUtxo;
+use ark_core::TxGraph;
 use ark_core::Vtxo;
 use bitcoin::hashes::sha256;
 use bitcoin::hashes::Hash;
@@ -1222,7 +1222,18 @@ async fn settle(
 
     tracing::info!(intent_id, "Registered intent");
 
-    let mut event_stream = grpc_client.get_event_stream().await?;
+    let topics = virtual_tx_outpoints
+        .spendable
+        .iter()
+        .map(|(o, _)| o.outpoint.to_string())
+        .chain(
+            own_cosigner_pks
+                .iter()
+                .map(|pk| pk.serialize().to_lower_hex_string()),
+        )
+        .collect();
+
+    let mut event_stream = grpc_client.get_event_stream(topics).await?;
 
     let mut vtxo_graph_chunks = Vec::new();
 
@@ -1372,8 +1383,7 @@ async fn settle(
         create_and_sign_forfeit_txs(
             &signing_kp,
             vtxo_inputs.as_slice(),
-            &connectors_graph,
-            &round_finalization_event.connectors_index,
+            &connectors_graph.leaves(),
             &server_info.forfeit_address,
             server_info.dust,
         )?

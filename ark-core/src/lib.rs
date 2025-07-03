@@ -1,5 +1,7 @@
 use bitcoin::Amount;
 use bitcoin::OutPoint;
+use bitcoin::ScriptBuf;
+use bitcoin::TxOut;
 
 pub mod boarding_output;
 pub mod coin_select;
@@ -16,16 +18,17 @@ mod error;
 mod history;
 mod internal_node;
 mod script;
+mod tx_graph;
 
 pub use ark_address::ArkAddress;
-use bitcoin::ScriptBuf;
-use bitcoin::TxOut;
 pub use boarding_output::BoardingOutput;
 pub use error::Error;
 pub use error::ErrorContext;
 pub use history::sort_transactions_by_created_at;
 pub use history::ArkTransaction;
 pub use script::extract_sequence_from_csv_sig_script;
+pub use tx_graph::TxGraph;
+pub use tx_graph::TxGraphChunk;
 pub use unilateral_exit::build_anchor_tx;
 pub use unilateral_exit::build_unilateral_exit_tree_txids;
 pub use unilateral_exit::SelectedUtxo;

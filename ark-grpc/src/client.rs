@@ -37,12 +37,12 @@ use ark_core::server::TreeNoncesAggregatedEvent;
 use ark_core::server::TreeSignatureEvent;
 use ark_core::server::TreeSigningStartedEvent;
 use ark_core::server::TreeTxEvent;
-use ark_core::server::TxGraphChunk;
 use ark_core::server::VtxoChain;
 use ark_core::server::VtxoChains;
 use ark_core::server::VtxoOutPoint;
 use ark_core::ArkAddress;
 use ark_core::ArkTransaction;
+use ark_core::TxGraphChunk;
 use async_stream::stream;
 use base64::Engine;
 use bitcoin::hex::FromHex;
@@ -378,11 +378,12 @@ impl Client {
 
     pub async fn get_event_stream(
         &self,
+        topics: Vec<String>,
     ) -> Result<impl Stream<Item = Result<RoundStreamEvent, Error>> + Unpin, Error> {
         let mut client = self.inner_ark_client()?;
 
         let response = client
-            .get_event_stream(GetEventStreamRequest {})
+            .get_event_stream(GetEventStreamRequest { topics })
             .await
             .map_err(Error::request)?;
         let mut stream = response.into_inner();
@@ -525,29 +526,9 @@ impl TryFrom<generated::ark::v1::BatchFinalizationEvent> for BatchFinalizationEv
             .map_err(Error::conversion)?;
         let commitment_tx = Psbt::deserialize(&commitment_tx).map_err(Error::conversion)?;
 
-        let connectors_index = value
-            .connectors_index
-            .iter()
-            .map(|(key, value)| {
-                let key = {
-                    let parts = key.split(':').collect::<Vec<_>>();
-
-                    let txid = parts[0].parse().map_err(Error::conversion)?;
-                    let vout = parts[1].parse().map_err(Error::conversion)?;
-
-                    OutPoint { txid, vout }
-                };
-
-                let value = value.clone().try_into()?;
-
-                Ok((key, value))
-            })
-            .collect::<Result<HashMap<OutPoint, OutPoint>, Error>>()?;
-
         Ok(BatchFinalizationEvent {
             id: value.id,
             commitment_tx,
-            connectors_index,
         })
     }
 }
