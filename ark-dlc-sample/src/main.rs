@@ -637,7 +637,7 @@ async fn fund_vtxo(
     let virtual_tx_outpoint = vtxo_list
         .spendable()
         .iter()
-        .find(|v| v.commitment_txid == round_txid)
+        .find(|v| v.commitment_txids[0] == round_txid)
         .ok_or(anyhow!("could not find input in round"))?;
     let vtxo_input = redeem::VtxoInput::new(
         vtxo,

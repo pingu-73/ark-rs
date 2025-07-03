@@ -93,8 +93,12 @@ where
                     })
                     .collect::<Result<Vec<_>, _>>()?;
 
+                // FIXME: I think the newly introduced `commitment_txids` field signals that any
+                // VTXO could have more than one commitment transaction as an ancestor! As such, it
+                // is not enough to build the unilateral exit tree assuming that there is only one
+                // commitment transaction.
                 let unilateral_exit_tree =
-                    UnilateralExitTree::new(virtual_tx_outpoint.commitment_txid, paths);
+                    UnilateralExitTree::new(virtual_tx_outpoint.commitment_txids[0], paths);
 
                 unilateral_exit_trees.push(unilateral_exit_tree);
             }

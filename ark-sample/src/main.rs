@@ -7,8 +7,6 @@ use anyhow::Result;
 use ark_core::boarding_output::list_boarding_outpoints;
 use ark_core::boarding_output::BoardingOutpoints;
 use ark_core::coin_select::select_vtxos;
-use ark_core::generate_incoming_vtxo_transaction_history;
-use ark_core::generate_outgoing_vtxo_transaction_history;
 use ark_core::proof_of_funds;
 use ark_core::redeem;
 use ark_core::redeem::build_offchain_transactions;
@@ -24,6 +22,7 @@ use ark_core::server::BatchTreeEventType;
 use ark_core::server::RoundStreamEvent;
 use ark_core::server::TxGraph;
 use ark_core::server::VtxoOutPoint;
+use ark_core::sort_transactions_by_created_at;
 use ark_core::vtxo::list_virtual_tx_outpoints;
 use ark_core::vtxo::VirtualTxOutpoints;
 use ark_core::ArkAddress;
@@ -200,6 +199,10 @@ async fn main() -> Result<()> {
                 &[vtxo],
             )
             .await?;
+
+            if txs.is_empty() {
+                println!("No transactions found");
+            }
 
             for tx in txs.iter() {
                 println!("{}\n", pretty_print_transaction(tx)?);
@@ -793,38 +796,20 @@ async fn transaction_history(
         }
     }
 
-    let mut incoming_transactions = Vec::new();
-    let mut outgoing_transactions = Vec::new();
+    let mut offchain_transactions = Vec::new();
     for vtxo in vtxos.iter() {
-        let vtxos = grpc_client.list_vtxos(&vtxo.to_ark_address()).await?;
+        let txs = grpc_client.get_tx_history(&vtxo.to_ark_address()).await?;
 
-        let spent = vtxos.spent();
-        // We should not include recoverable VTXOS in the spendable balance because they cannot be
-        // spent until they are claimed.
-        let spendable = vtxos.spendable();
-
-        let mut new_incoming_transactions = generate_incoming_vtxo_transaction_history(
-            spent,
-            spendable,
-            &boarding_round_transactions,
-        )?;
-
-        incoming_transactions.append(&mut new_incoming_transactions);
-
-        let mut new_outgoing_transactions =
-            generate_outgoing_vtxo_transaction_history(spent, spendable)?;
-
-        outgoing_transactions.append(&mut new_outgoing_transactions);
+        for tx in txs {
+            if !boarding_round_transactions.contains(&tx.txid()) {
+                offchain_transactions.push(tx);
+            }
+        }
     }
 
-    let mut txs = [
-        boarding_transactions,
-        incoming_transactions,
-        outgoing_transactions,
-    ]
-    .concat();
+    let mut txs = [boarding_transactions, offchain_transactions].concat();
 
-    txs.sort_by_key(|b| std::cmp::Reverse(b.created_at()));
+    sort_transactions_by_created_at(&mut txs);
 
     Ok(txs)
 }
@@ -849,7 +834,7 @@ fn pretty_print_transaction(tx: &ArkTransaction) -> Result<String> {
                  Time: {time}"
             )
         }
-        ArkTransaction::Round {
+        ArkTransaction::Commitment {
             txid,
             amount,
             created_at,
@@ -871,7 +856,7 @@ fn pretty_print_transaction(tx: &ArkTransaction) -> Result<String> {
                  Time: {time}"
             )
         }
-        ArkTransaction::Redeem {
+        ArkTransaction::Virtual {
             txid,
             amount,
             is_settled,

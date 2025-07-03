@@ -2,10 +2,9 @@ use crate::error::ErrorContext;
 use crate::wallet::BoardingWallet;
 use crate::wallet::OnchainWallet;
 use ark_core::build_anchor_tx;
-use ark_core::generate_incoming_vtxo_transaction_history;
-use ark_core::generate_outgoing_vtxo_transaction_history;
 use ark_core::server;
 use ark_core::server::VtxoOutPoint;
+use ark_core::sort_transactions_by_created_at;
 use ark_core::ArkAddress;
 use ark_core::ArkTransaction;
 use ark_core::UtxoCoinSelection;
@@ -219,24 +218,6 @@ pub struct SpendStatus {
 pub struct ListVtxo {
     pub spendable: Vec<(Vec<VtxoOutPoint>, Vtxo)>,
     pub spent: Vec<(Vec<VtxoOutPoint>, Vtxo)>,
-}
-
-impl ListVtxo {
-    fn spendable_outpoints(&self) -> Vec<VtxoOutPoint> {
-        self.spendable
-            .clone()
-            .into_iter()
-            .flat_map(|(os, _)| os)
-            .collect::<Vec<_>>()
-    }
-
-    fn spent_outpoints(&self) -> Vec<VtxoOutPoint> {
-        self.spent
-            .clone()
-            .into_iter()
-            .flat_map(|(os, _)| os)
-            .collect::<Vec<_>>()
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -537,27 +518,22 @@ where
             }
         }
 
-        let vtxos = self.list_vtxos(true).await?;
+        let offchain_addresses = self.get_offchain_addresses()?;
 
-        let incoming_transactions = generate_incoming_vtxo_transaction_history(
-            &vtxos.spent_outpoints(),
-            &vtxos.spendable_outpoints(),
-            &boarding_round_transactions,
-        )?;
+        let mut offchain_transactions = Vec::new();
+        for (ark_address, _) in offchain_addresses.iter() {
+            let txs = self.network_client().get_tx_history(ark_address).await?;
 
-        let outgoing_transactions = generate_outgoing_vtxo_transaction_history(
-            &vtxos.spent_outpoints(),
-            &vtxos.spendable_outpoints(),
-        )?;
+            for tx in txs {
+                if !boarding_round_transactions.contains(&tx.txid()) {
+                    offchain_transactions.push(tx);
+                }
+            }
+        }
 
-        let mut txs = [
-            boarding_transactions,
-            incoming_transactions,
-            outgoing_transactions,
-        ]
-        .concat();
+        let mut txs = [boarding_transactions, offchain_transactions].concat();
 
-        txs.sort_by_key(|a| a.created_at());
+        sort_transactions_by_created_at(&mut txs);
 
         Ok(txs)
     }

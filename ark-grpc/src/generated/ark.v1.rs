@@ -34,8 +34,8 @@ pub struct Vtxo {
     pub created_at: i64,
     #[prost(int64, tag = "5")]
     pub expires_at: i64,
-    #[prost(string, tag = "6")]
-    pub commitment_txid: ::prost::alloc::string::String,
+    #[prost(string, repeated, tag = "6")]
+    pub commitment_txids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     #[prost(bool, tag = "7")]
     pub preconfirmed: bool,
     #[prost(bool, tag = "8")]
@@ -1276,8 +1276,8 @@ pub struct IndexerVtxo {
     pub is_spent: bool,
     #[prost(string, tag = "10")]
     pub spent_by: ::prost::alloc::string::String,
-    #[prost(string, tag = "11")]
-    pub commitment_txid: ::prost::alloc::string::String,
+    #[prost(string, repeated, tag = "11")]
+    pub commitment_txids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct IndexerChain {

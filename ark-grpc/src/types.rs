@@ -129,7 +129,11 @@ impl TryFrom<&generated::ark::v1::IndexerVtxo> for server::VtxoOutPoint {
             false => Some(value.spent_by.parse().map_err(Error::conversion)?),
         };
 
-        let commitment_txid = value.commitment_txid.parse().map_err(Error::conversion)?;
+        let commitment_txids = value
+            .commitment_txids
+            .iter()
+            .map(|c| c.parse().map_err(Error::conversion))
+            .collect::<Result<Vec<_>, Error>>()?;
 
         Ok(Self {
             outpoint,
@@ -142,7 +146,7 @@ impl TryFrom<&generated::ark::v1::IndexerVtxo> for server::VtxoOutPoint {
             is_redeemed: value.is_redeemed,
             is_spent: value.is_spent,
             spent_by,
-            commitment_txid,
+            commitment_txids,
         })
     }
 }
@@ -164,7 +168,11 @@ impl TryFrom<&generated::ark::v1::Vtxo> for server::VtxoOutPoint {
             false => Some(value.spent_by.parse().map_err(Error::conversion)?),
         };
 
-        let commitment_txid = value.commitment_txid.parse().map_err(Error::conversion)?;
+        let commitment_txids = value
+            .commitment_txids
+            .iter()
+            .map(|c| c.parse().map_err(Error::conversion))
+            .collect::<Result<Vec<_>, Error>>()?;
 
         Ok(Self {
             outpoint,
@@ -177,7 +185,7 @@ impl TryFrom<&generated::ark::v1::Vtxo> for server::VtxoOutPoint {
             is_redeemed: value.redeemed,
             is_spent: value.spent,
             spent_by,
-            commitment_txid,
+            commitment_txids,
         })
     }
 }

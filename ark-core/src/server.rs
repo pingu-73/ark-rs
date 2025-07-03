@@ -272,7 +272,7 @@ pub struct VtxoOutPoint {
     pub is_redeemed: bool,
     pub is_spent: bool,
     pub spent_by: Option<Txid>,
-    pub commitment_txid: Txid,
+    pub commitment_txids: Vec<Txid>,
 }
 
 impl VtxoOutPoint {

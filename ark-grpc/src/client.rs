@@ -1,10 +1,12 @@
 use crate::generated;
 use crate::generated::ark::v1::ark_service_client::ArkServiceClient;
 use crate::generated::ark::v1::indexer_service_client::IndexerServiceClient;
+use crate::generated::ark::v1::indexer_tx_history_record::Key;
 use crate::generated::ark::v1::Bip322Signature;
 use crate::generated::ark::v1::ConfirmRegistrationRequest;
 use crate::generated::ark::v1::GetEventStreamRequest;
 use crate::generated::ark::v1::GetInfoRequest;
+use crate::generated::ark::v1::GetTransactionHistoryRequest;
 use crate::generated::ark::v1::GetTransactionsStreamRequest;
 use crate::generated::ark::v1::GetVtxosRequest;
 use crate::generated::ark::v1::Outpoint;
@@ -40,6 +42,7 @@ use ark_core::server::VtxoChain;
 use ark_core::server::VtxoChains;
 use ark_core::server::VtxoOutPoint;
 use ark_core::ArkAddress;
+use ark_core::ArkTransaction;
 use async_stream::stream;
 use base64::Engine;
 use bitcoin::hex::FromHex;
@@ -47,6 +50,7 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::taproot::Signature;
 use bitcoin::OutPoint;
 use bitcoin::Psbt;
+use bitcoin::SignedAmount;
 use bitcoin::Txid;
 use futures::Stream;
 use futures::StreamExt;
@@ -99,8 +103,8 @@ impl Client {
 
         let mut client = self.inner_indexer_client()?;
 
-        // TODO: implement pagination
-        // TODO: we probably want to expose all fields as arguments to this function
+        // TODO: Implement pagination.
+        // TODO: We probably want to expose all fields as arguments to this function.
         let response = client
             .get_vtxos(GetVtxosRequest {
                 addresses: vec![address],
@@ -155,6 +159,31 @@ impl Client {
         spent.append(&mut spent_by_redeem);
 
         Ok(ListVtxo::new(spent, spendable))
+    }
+
+    pub async fn get_tx_history(&self, address: &ArkAddress) -> Result<Vec<ArkTransaction>, Error> {
+        let address = address.encode();
+
+        let mut client = self.inner_indexer_client()?;
+
+        // TODO: Implement pagination.
+        let response = client
+            .get_transaction_history(GetTransactionHistoryRequest {
+                address,
+                start_time: -1,
+                end_time: -1,
+                page: None,
+            })
+            .await
+            .map_err(Error::request)?;
+
+        let history = response.into_inner().history;
+        let history = history
+            .iter()
+            .map(ArkTransaction::try_from)
+            .collect::<Result<Vec<_>, Error>>()?;
+
+        Ok(history)
     }
 
     pub async fn register_intent(
@@ -885,5 +914,37 @@ impl TryFrom<&generated::ark::v1::IndexerChainedTx> for ChainedTx {
             txid: Txid::from_str(value.txid.as_str()).map_err(Error::conversion)?,
             tx_type,
         })
+    }
+}
+
+impl TryFrom<&generated::ark::v1::IndexerTxHistoryRecord> for ArkTransaction {
+    type Error = Error;
+
+    fn try_from(value: &generated::ark::v1::IndexerTxHistoryRecord) -> Result<Self, Self::Error> {
+        let sign = match value.r#type() {
+            generated::ark::v1::IndexerTxType::Received => 1,
+            // Default to sent if unspecified.
+            generated::ark::v1::IndexerTxType::Sent
+            | generated::ark::v1::IndexerTxType::Unspecified => -1,
+        };
+
+        let amount = SignedAmount::from_sat(value.amount as i64 * sign);
+
+        let tx = match &value.key {
+            Some(Key::CommitmentTxid(txid)) => ArkTransaction::Commitment {
+                txid: txid.parse().map_err(Error::conversion)?,
+                amount,
+                created_at: value.created_at,
+            },
+            Some(Key::VirtualTxid(txid)) => ArkTransaction::Virtual {
+                txid: txid.parse().map_err(Error::conversion)?,
+                amount,
+                is_settled: value.is_settled,
+                created_at: value.created_at,
+            },
+            None => return Err(Error::conversion("invalid transaction without key")),
+        };
+
+        Ok(tx)
     }
 }
