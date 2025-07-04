@@ -177,7 +177,7 @@ pub struct GetInfoRequest {}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetInfoResponse {
     #[prost(string, tag = "1")]
-    pub pubkey: ::prost::alloc::string::String,
+    pub signer_pubkey: ::prost::alloc::string::String,
     #[prost(int64, tag = "2")]
     pub vtxo_tree_expiry: i64,
     #[prost(int64, tag = "3")]
@@ -233,11 +233,8 @@ pub struct ConfirmRegistrationRequest {
     #[prost(string, tag = "1")]
     pub intent_id: ::prost::alloc::string::String,
 }
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ConfirmRegistrationResponse {
-    #[prost(string, tag = "1")]
-    pub blinded_creds: ::prost::alloc::string::String,
-}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct ConfirmRegistrationResponse {}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SubmitTreeNoncesRequest {
     #[prost(string, tag = "1")]
@@ -1162,19 +1159,23 @@ pub struct GetVtxoTreeLeavesResponse {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetVtxosRequest {
-    /// Either specify a list of addresses to list the vtxos for
+    /// Either specify a list of vtxo scripts.
     #[prost(string, repeated, tag = "1")]
-    pub addresses: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// Or specify a list of outpoints. The 2 filters are mutually exclusive
+    pub scripts: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Or specify a list of vtxo outpoints. The 2 filters are mutually exclusive.
     #[prost(string, repeated, tag = "2")]
     pub outpoints: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// Retrieve only spendable vtxos
     #[prost(bool, tag = "3")]
     pub spendable_only: bool,
-    /// Retrieve only spendable vtxos. The 2 filters are mutually exclusive
+    /// Retrieve only spent vtxos.
     #[prost(bool, tag = "4")]
     pub spent_only: bool,
-    #[prost(message, optional, tag = "5")]
+    /// Retrieve only recoverable vtxos (notes, subdust or swept vtxos).
+    /// The 3 filters are mutually exclusive,
+    #[prost(bool, tag = "5")]
+    pub recoverable_only: bool,
+    #[prost(message, optional, tag = "6")]
     pub page: ::core::option::Option<IndexerPageRequest>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1231,12 +1232,12 @@ pub struct GetVirtualTxsResponse {
     pub page: ::core::option::Option<IndexerPageResponse>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetSweptCommitmentTxRequest {
-    #[prost(string, tag = "1")]
-    pub txid: ::prost::alloc::string::String,
+pub struct GetBatchSweepTransactionsRequest {
+    #[prost(message, optional, tag = "1")]
+    pub batch_outpoint: ::core::option::Option<IndexerOutpoint>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct GetSweptCommitmentTxResponse {
+pub struct GetBatchSweepTransactionsResponse {
     #[prost(string, repeated, tag = "1")]
     pub swept_by: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
@@ -1741,31 +1742,34 @@ pub mod indexer_service_client {
                 .insert(GrpcMethod::new("ark.v1.IndexerService", "GetVirtualTxs"));
             self.inner.unary(req, path, codec).await
         }
-        /// GetSweptCommitmentTx returns the list of transaction (txid) that swept each batch output
-        /// of the specified commitment transaction.
-        /// In most cases the list contains only one txid per batch, that means the funds locked in
-        /// the batch output have been claimed back.
-        /// If any of the leaves of the tree (vtxo) have been unrolled onchain before the
-        /// expiration, the list will contain many txids.
+        /// GetBatchSweepTransactions returns the list of transaction (txid) that swept a given
+        /// batch output.
+        /// In most cases the list contains only one txid, meaning that all the amount locked for a
+        /// vtxo tree has been claimed back.
+        /// If any of the leaves of the tree have been unrolled onchain before the expiration, the
+        /// list will contain many txids instead.
         /// In a binary tree with 4 or more leaves, 1 unroll causes the server to broadcast 3 txs to
-        /// sweep the whole tree for example.
+        /// sweep the whole rest of tree for example.
         /// If a whole vtxo tree has been unrolled onchain, the list of txids for that batch output
-        /// is be empty.
-        pub async fn get_swept_commitment_tx(
+        /// is empty.
+        pub async fn get_batch_sweep_transactions(
             &mut self,
-            request: impl tonic::IntoRequest<super::GetSweptCommitmentTxRequest>,
-        ) -> std::result::Result<tonic::Response<super::GetSweptCommitmentTxResponse>, tonic::Status>
-        {
+            request: impl tonic::IntoRequest<super::GetBatchSweepTransactionsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetBatchSweepTransactionsResponse>,
+            tonic::Status,
+        > {
             self.inner.ready().await.map_err(|e| {
                 tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
             })?;
             let codec = tonic::codec::ProstCodec::default();
-            let path =
-                http::uri::PathAndQuery::from_static("/ark.v1.IndexerService/GetSweptCommitmentTx");
+            let path = http::uri::PathAndQuery::from_static(
+                "/ark.v1.IndexerService/GetBatchSweepTransactions",
+            );
             let mut req = request.into_request();
             req.extensions_mut().insert(GrpcMethod::new(
                 "ark.v1.IndexerService",
-                "GetSweptCommitmentTx",
+                "GetBatchSweepTransactions",
             ));
             self.inner.unary(req, path, codec).await
         }

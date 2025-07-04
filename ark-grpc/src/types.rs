@@ -52,7 +52,7 @@ impl TryFrom<generated::ark::v1::GetInfoResponse> for server::Info {
     type Error = Error;
 
     fn try_from(value: generated::ark::v1::GetInfoResponse) -> Result<Self, Self::Error> {
-        let pk = value.pubkey.parse().map_err(Error::conversion)?;
+        let pk = value.signer_pubkey.parse().map_err(Error::conversion)?;
 
         let vtxo_tree_expiry = bitcoin::Sequence::from_seconds_ceil(value.vtxo_tree_expiry as u32)
             .map_err(Error::conversion)?;

@@ -99,7 +99,8 @@ impl Client {
     }
 
     pub async fn list_vtxos(&self, address: &ArkAddress) -> Result<ListVtxo, Error> {
-        let address = address.encode();
+        let script = address.to_p2tr_script_pubkey();
+        let script = script.to_hex_string();
 
         let mut client = self.inner_indexer_client()?;
 
@@ -107,8 +108,9 @@ impl Client {
         // TODO: We probably want to expose all fields as arguments to this function.
         let response = client
             .get_vtxos(GetVtxosRequest {
-                addresses: vec![address],
+                scripts: vec![script],
                 outpoints: vec![],
+                recoverable_only: false,
                 spendable_only: false,
                 spent_only: false,
                 page: None,
@@ -290,15 +292,15 @@ impl Client {
         Ok(FinalizeOffchainTxResponse {})
     }
 
-    pub async fn confirm_registration(&self, intent_id: String) -> Result<String, Error> {
+    pub async fn confirm_registration(&self, intent_id: String) -> Result<(), Error> {
         let mut client = self.inner_ark_client()?;
 
-        let res = client
+        client
             .confirm_registration(ConfirmRegistrationRequest { intent_id })
             .await
             .map_err(Error::request)?;
 
-        Ok(res.into_inner().blinded_creds)
+        Ok(())
     }
 
     pub async fn submit_tree_nonces(
