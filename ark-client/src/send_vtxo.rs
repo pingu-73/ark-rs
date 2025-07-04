@@ -81,7 +81,8 @@ where
             &vtxo_inputs,
             self.server_info.dust,
         )
-        .map_err(Error::from)?;
+        .map_err(Error::from)
+        .context("failed to build offchain transactions")?;
 
         let sign_fn =
         |msg: secp256k1::Message| -> Result<(schnorr::Signature, XOnlyPublicKey), ark_core::Error> {
