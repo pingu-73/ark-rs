@@ -2,11 +2,9 @@ use crate::error::ErrorContext;
 use crate::wallet::BoardingWallet;
 use crate::wallet::OnchainWallet;
 use ark_core::build_anchor_tx;
-use ark_core::generate_incoming_vtxo_transaction_history;
-use ark_core::generate_outgoing_vtxo_transaction_history;
 use ark_core::server;
-use ark_core::server::Round;
 use ark_core::server::VtxoOutPoint;
+use ark_core::sort_transactions_by_created_at;
 use ark_core::ArkAddress;
 use ark_core::ArkTransaction;
 use ark_core::UtxoCoinSelection;
@@ -111,7 +109,7 @@ pub use error::Error;
 /// #         unimplemented!()
 /// #     }
 /// #
-/// #     fn select_coins(&self, target_amount: Amount) -> Result<UtxoCoinSelection, Error> {
+/// #     fn select_coins(&self, target_amount: Amount) -> Result<ark_core::UtxoCoinSelection, Error> {
 /// #         unimplemented!()
 /// #     }
 /// # }
@@ -220,24 +218,6 @@ pub struct SpendStatus {
 pub struct ListVtxo {
     pub spendable: Vec<(Vec<VtxoOutPoint>, Vtxo)>,
     pub spent: Vec<(Vec<VtxoOutPoint>, Vtxo)>,
-}
-
-impl ListVtxo {
-    fn spendable_outpoints(&self) -> Vec<VtxoOutPoint> {
-        self.spendable
-            .clone()
-            .into_iter()
-            .flat_map(|(os, _)| os)
-            .collect::<Vec<_>>()
-    }
-
-    fn spent_outpoints(&self) -> Vec<VtxoOutPoint> {
-        self.spent
-            .clone()
-            .into_iter()
-            .flat_map(|(os, _)| os)
-            .collect::<Vec<_>>()
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -386,7 +366,7 @@ where
         Ok(vec![address])
     }
 
-    pub async fn list_vtxos(&self) -> Result<ListVtxo, Error> {
+    pub async fn list_vtxos(&self, select_recoverable_vtxos: bool) -> Result<ListVtxo, Error> {
         let addresses = self.get_offchain_addresses()?;
 
         let mut vtxos = ListVtxo {
@@ -397,19 +377,26 @@ where
         for (address, vtxo) in addresses.into_iter() {
             let list = self.network_client().list_vtxos(&address).await?;
 
-            vtxos
-                .spendable
-                .append(&mut vec![(list.spendable, vtxo.clone())]);
-            vtxos.spent.append(&mut vec![(list.spent, vtxo)]);
+            if select_recoverable_vtxos {
+                vtxos
+                    .spendable
+                    .append(&mut vec![(list.spendable_with_recoverable(), vtxo.clone())]);
+
+                vtxos
+                    .spent
+                    .append(&mut vec![(list.spent_without_recoverable(), vtxo.clone())]);
+            } else {
+                vtxos
+                    .spendable
+                    .append(&mut vec![(list.spendable().to_vec(), vtxo.clone())]);
+
+                vtxos
+                    .spent
+                    .append(&mut vec![(list.spent().to_vec(), vtxo.clone())]);
+            }
         }
 
         Ok(vtxos)
-    }
-
-    pub async fn get_round(&self, round_txid: String) -> Result<Option<Round>, Error> {
-        let round = self.network_client().get_round(round_txid).await?;
-
-        Ok(round)
     }
 
     pub async fn get_vtxo_chain(
@@ -426,12 +413,16 @@ where
         Ok(Some(vtxo_chain))
     }
 
-    pub async fn spendable_vtxos(&self) -> Result<Vec<(Vec<VtxoOutPoint>, Vtxo)>, Error> {
+    pub async fn spendable_vtxos(
+        &self,
+        select_recoverable_vtxos: bool,
+    ) -> Result<Vec<(Vec<VtxoOutPoint>, Vtxo)>, Error> {
         let now = Timestamp::now();
 
         let mut spendable = vec![];
 
-        let vtxos = self.list_vtxos().await?;
+        let vtxos = self.list_vtxos(select_recoverable_vtxos).await?;
+
         for (virtual_tx_outpoints, vtxo) in vtxos.spendable {
             let explorer_utxos = self.blockchain().find_outpoints(vtxo.address()).await?;
 
@@ -468,19 +459,26 @@ where
     }
 
     pub async fn offchain_balance(&self) -> Result<OffChainBalance, Error> {
-        let list = self.spendable_vtxos().await?;
+        // We should not include recoverable VTXOS in the spendable balance because they cannot be
+        // spent until they are claimed.
+        let list = self
+            .spendable_vtxos(false)
+            .await
+            .context("failed to get spendable VTXOs")?;
         let sum =
             list.iter()
                 .flat_map(|(vtxos, _)| vtxos)
-                .fold(OffChainBalance::default(), |acc, x| match x.is_pending {
-                    true => OffChainBalance {
-                        pending: acc.pending + x.amount,
-                        ..acc
-                    },
-                    false => OffChainBalance {
-                        confirmed: acc.confirmed + x.amount,
-                        ..acc
-                    },
+                .fold(OffChainBalance::default(), |acc, x| {
+                    match x.is_preconfirmed {
+                        true => OffChainBalance {
+                            pending: acc.pending + x.amount,
+                            ..acc
+                        },
+                        false => OffChainBalance {
+                            confirmed: acc.confirmed + x.amount,
+                            ..acc
+                        },
+                    }
                 });
 
         Ok(sum)
@@ -520,27 +518,22 @@ where
             }
         }
 
-        let vtxos = self.list_vtxos().await?;
+        let offchain_addresses = self.get_offchain_addresses()?;
 
-        let incoming_transactions = generate_incoming_vtxo_transaction_history(
-            &vtxos.spent_outpoints(),
-            &vtxos.spendable_outpoints(),
-            &boarding_round_transactions,
-        )?;
+        let mut offchain_transactions = Vec::new();
+        for (ark_address, _) in offchain_addresses.iter() {
+            let txs = self.network_client().get_tx_history(ark_address).await?;
 
-        let outgoing_transactions = generate_outgoing_vtxo_transaction_history(
-            &vtxos.spent_outpoints(),
-            &vtxos.spendable_outpoints(),
-        )?;
+            for tx in txs {
+                if !boarding_round_transactions.contains(&tx.txid()) {
+                    offchain_transactions.push(tx);
+                }
+            }
+        }
 
-        let mut txs = [
-            boarding_transactions,
-            incoming_transactions,
-            outgoing_transactions,
-        ]
-        .concat();
+        let mut txs = [boarding_transactions, offchain_transactions].concat();
 
-        txs.sort_by_key(|a| a.created_at());
+        sort_transactions_by_created_at(&mut txs);
 
         Ok(txs)
     }

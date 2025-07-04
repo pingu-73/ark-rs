@@ -1,12 +1,11 @@
 use crate::generated;
 use crate::Error;
 use ark_core::server;
-use base64::Engine;
 use bitcoin::address::NetworkUnchecked;
 use bitcoin::Address;
 use bitcoin::Amount;
 use bitcoin::OutPoint;
-use bitcoin::Psbt;
+use bitcoin::ScriptBuf;
 use std::str::FromStr;
 
 #[derive(Clone, Debug)]
@@ -53,7 +52,7 @@ impl TryFrom<generated::ark::v1::GetInfoResponse> for server::Info {
     type Error = Error;
 
     fn try_from(value: generated::ark::v1::GetInfoResponse) -> Result<Self, Self::Error> {
-        let pk = value.pubkey.parse().map_err(Error::conversion)?;
+        let pk = value.signer_pubkey.parse().map_err(Error::conversion)?;
 
         let vtxo_tree_expiry = bitcoin::Sequence::from_seconds_ceil(value.vtxo_tree_expiry as u32)
             .map_err(Error::conversion)?;
@@ -113,6 +112,45 @@ impl TryFrom<generated::ark::v1::GetInfoResponse> for server::Info {
     }
 }
 
+impl TryFrom<&generated::ark::v1::IndexerVtxo> for server::VtxoOutPoint {
+    type Error = Error;
+
+    fn try_from(value: &generated::ark::v1::IndexerVtxo) -> Result<Self, Self::Error> {
+        let outpoint = value.outpoint.as_ref().expect("outpoint");
+        let outpoint = OutPoint {
+            txid: outpoint.txid.parse().map_err(Error::conversion)?,
+            vout: outpoint.vout,
+        };
+
+        let script = ScriptBuf::from_hex(&value.script).map_err(Error::conversion)?;
+
+        let spent_by = match value.spent_by.is_empty() {
+            true => None,
+            false => Some(value.spent_by.parse().map_err(Error::conversion)?),
+        };
+
+        let commitment_txids = value
+            .commitment_txids
+            .iter()
+            .map(|c| c.parse().map_err(Error::conversion))
+            .collect::<Result<Vec<_>, Error>>()?;
+
+        Ok(Self {
+            outpoint,
+            created_at: value.created_at,
+            expires_at: value.expires_at,
+            amount: Amount::from_sat(value.amount),
+            script,
+            is_preconfirmed: value.is_preconfirmed,
+            is_swept: value.is_swept,
+            is_unrolled: value.is_unrolled,
+            is_spent: value.is_spent,
+            spent_by,
+            commitment_txids,
+        })
+    }
+}
+
 impl TryFrom<&generated::ark::v1::Vtxo> for server::VtxoOutPoint {
     type Error = Error;
 
@@ -123,39 +161,31 @@ impl TryFrom<&generated::ark::v1::Vtxo> for server::VtxoOutPoint {
             vout: outpoint.vout,
         };
 
+        let script = ScriptBuf::from_hex(&value.script).map_err(Error::conversion)?;
+
         let spent_by = match value.spent_by.is_empty() {
             true => None,
             false => Some(value.spent_by.parse().map_err(Error::conversion)?),
         };
 
-        let redeem_tx = match value.redeem_tx.is_empty() {
-            true => None,
-            false => {
-                let base64 = base64::engine::GeneralPurpose::new(
-                    &base64::alphabet::STANDARD,
-                    base64::engine::GeneralPurposeConfig::new(),
-                );
-
-                let psbt = base64
-                    .decode(value.redeem_tx.clone())
-                    .map_err(Error::conversion)?;
-                let psbt = Psbt::deserialize(&psbt).map_err(Error::conversion)?;
-                Some(psbt)
-            }
-        };
+        let commitment_txids = value
+            .commitment_txids
+            .iter()
+            .map(|c| c.parse().map_err(Error::conversion))
+            .collect::<Result<Vec<_>, Error>>()?;
 
         Ok(Self {
             outpoint,
-            spent: value.spent,
-            round_txid: value.round_txid.parse().map_err(Error::conversion)?,
-            spent_by,
-            expire_at: value.expire_at,
-            swept: value.swept,
-            is_pending: value.is_pending,
-            redeem_tx,
-            amount: Amount::from_sat(value.amount),
-            pubkey: value.pubkey.clone(),
             created_at: value.created_at,
+            expires_at: value.expires_at,
+            amount: Amount::from_sat(value.amount),
+            script,
+            is_preconfirmed: value.is_preconfirmed,
+            is_swept: value.is_swept,
+            is_unrolled: value.is_unrolled,
+            is_spent: value.is_spent,
+            spent_by,
+            commitment_txids,
         })
     }
 }

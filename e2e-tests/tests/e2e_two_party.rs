@@ -56,7 +56,7 @@ pub async fn e2e() {
     assert_eq!(alice_offchain_balance.total(), Amount::ZERO);
     assert_eq!(bob_offchain_balance.total(), Amount::ZERO);
 
-    alice.board(&mut rng).await.unwrap();
+    alice.board(&mut rng, false).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     let alice_offchain_balance = alice.offchain_balance().await.unwrap();
@@ -83,7 +83,7 @@ pub async fn e2e() {
         "Sending VTXO from Alice to Bob"
     );
 
-    let redeem_tx = alice
+    let virtual_txid = alice
         .send_vtxo(bob_offchain_address, send_to_bob_vtxo_amount)
         .await
         .unwrap();
@@ -94,7 +94,7 @@ pub async fn e2e() {
     tracing::info!(
         ?alice_offchain_balance,
         ?bob_offchain_balance,
-        redeem_txid = %redeem_tx.unsigned_tx.compute_txid(),
+        virtual_txid = %virtual_txid,
         "Sent VTXO from Alice to Bob"
     );
 
@@ -106,7 +106,7 @@ pub async fn e2e() {
     .await;
     wait_until_balance(&bob, Amount::ZERO, send_to_bob_vtxo_amount).await;
 
-    bob.board(&mut rng).await.unwrap();
+    bob.board(&mut rng, false).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     let alice_offchain_balance = alice.offchain_balance().await.unwrap();
@@ -126,7 +126,7 @@ pub async fn e2e() {
     assert_eq!(bob_offchain_balance.confirmed(), send_to_bob_vtxo_amount);
     assert_eq!(bob_offchain_balance.pending(), Amount::ZERO);
 
-    alice.board(&mut rng).await.unwrap();
+    alice.board(&mut rng, false).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     let alice_offchain_balance = alice.offchain_balance().await.unwrap();

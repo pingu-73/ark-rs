@@ -35,15 +35,17 @@ where
     /// commitment transaction output to a spendable VTXO. Every transaction is fully signed,
     /// but requires fee bumping through a P2A output.
     pub async fn build_unilateral_exit_trees(&self) -> Result<Vec<Vec<Transaction>>, Error> {
+        // Recoverable VTXOs cannot be unilaterally claimed.
+        let select_recoverable_vtxos = false;
+
         let spendable_vtxos = self
-            .spendable_vtxos()
+            .spendable_vtxos(select_recoverable_vtxos)
             .await
             .context("failed to get spendable VTXOs")?;
 
-        let network_client = &self.network_client();
         let mut unilateral_exit_trees = Vec::new();
 
-        // For reach spendable VTXO, generate its unilateral exit tree.
+        // For each spendable VTXO, generate its unilateral exit tree.
         for (virtual_tx_outpoints, _) in spendable_vtxos {
             for virtual_tx_outpoint in virtual_tx_outpoints {
                 let vtxo_chain_response = self
@@ -51,7 +53,12 @@ where
                     .get_vtxo_chain(Some(virtual_tx_outpoint.outpoint), None)
                     .await
                     .map_err(Error::ad_hoc)
-                    .context("failed to get VTXO chain")?;
+                    .with_context(|| {
+                        format!(
+                            "failed to get VTXO chain for outpoint {}",
+                            virtual_tx_outpoint.outpoint
+                        )
+                    })?;
 
                 let paths = build_unilateral_exit_tree_txids(
                     &vtxo_chain_response.chains,
@@ -79,7 +86,9 @@ where
                                     .find(|t| t.unsigned_tx.compute_txid() == txid)
                                     .cloned()
                                     .ok_or_else(|| {
-                                        Error::ad_hoc("no PSBT found for virtual TX {txid}")
+                                        Error::ad_hoc(format!(
+                                            "no PSBT found for virtual TX {txid}"
+                                        ))
                                     })
                             })
                             .collect::<Result<Vec<_>, _>>()
@@ -87,7 +96,7 @@ where
                     .collect::<Result<Vec<_>, _>>()?;
 
                 let unilateral_exit_tree =
-                    UnilateralExitTree::new(virtual_tx_outpoint.round_txid, paths);
+                    UnilateralExitTree::new(virtual_tx_outpoint.commitment_txids, paths);
 
                 unilateral_exit_trees.push(unilateral_exit_tree);
             }
@@ -95,19 +104,23 @@ where
 
         let mut branches: Vec<Vec<Transaction>> = Vec::new();
         for unilateral_exit_tree in unilateral_exit_trees {
-            let round_txid = unilateral_exit_tree.round_txid();
+            let commitment_txids = unilateral_exit_tree.commitment_txids();
 
-            let round_tx = network_client
-                .get_round(round_txid.to_string())
-                .await
-                .map_err(Error::ark_server)?
-                .ok_or_else(|| Error::ad_hoc(format!("could not find round {round_txid}")))?;
-            let round_tx = round_tx.round_tx.ok_or_else(|| {
-                Error::ad_hoc(format!("round {round_txid} is missing transaction data"))
-            })?;
+            let mut commitment_txs = Vec::new();
+            for commitment_txid in commitment_txids.iter() {
+                let commitment_tx = self
+                    .blockchain()
+                    .find_tx(commitment_txid)
+                    .await?
+                    .ok_or_else(|| {
+                        Error::ad_hoc(format!("could not find commitment TX {commitment_txid}"))
+                    })?;
+
+                commitment_txs.push(commitment_tx);
+            }
 
             let signed_unilateral_exit_tree =
-                sign_unilateral_exit_tree(&unilateral_exit_tree, &round_tx)?;
+                sign_unilateral_exit_tree(&unilateral_exit_tree, commitment_txs.as_slice())?;
             branches.extend(signed_unilateral_exit_tree);
         }
 

@@ -1,6 +1,5 @@
 use crate::error::ErrorContext;
 use crate::utils::sleep;
-use crate::utils::spawn;
 use crate::wallet::BoardingWallet;
 use crate::wallet::OnchainWallet;
 use crate::Blockchain;
@@ -13,23 +12,24 @@ use ark_core::round::create_and_sign_forfeit_txs;
 use ark_core::round::generate_nonce_tree;
 use ark_core::round::sign_round_psbt;
 use ark_core::round::sign_vtxo_tree;
-use ark_core::round::NonceTree;
-use ark_core::round::PubNonceTree;
+use ark_core::round::NonceKps;
+use ark_core::server::BatchTreeEventType;
 use ark_core::server::RoundStreamEvent;
-use ark_core::server::TxTree;
 use ark_core::ArkAddress;
+use ark_core::TxGraph;
 use backon::ExponentialBuilder;
 use backon::Retryable;
+use bitcoin::hashes::sha256;
+use bitcoin::hashes::Hash;
+use bitcoin::hex::DisplayHex;
 use bitcoin::key::Keypair;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::schnorr;
 use bitcoin::Address;
 use bitcoin::Amount;
-use bitcoin::Psbt;
 use bitcoin::TxOut;
 use bitcoin::Txid;
 use bitcoin::XOnlyPublicKey;
-use futures::FutureExt;
 use futures::StreamExt;
 use jiff::Timestamp;
 use rand::CryptoRng;
@@ -43,15 +43,16 @@ where
 {
     /// Lift all pending VTXOs and boarding outputs into the Ark, converting them into new,
     /// confirmed VTXOs. We do this by "joining the next round".
-    pub async fn board<R>(&self, rng: &mut R) -> Result<(), Error>
+    pub async fn board<R>(&self, rng: &mut R, select_recoverable_vtxos: bool) -> Result<(), Error>
     where
         R: Rng + CryptoRng + Clone,
     {
         // Get off-chain address and send all funds to this address, no change output 🦄
         let (to_address, _) = self.get_offchain_address()?;
 
-        let (boarding_inputs, vtxo_inputs, total_amount) =
-            self.fetch_round_transaction_inputs().await?;
+        let (boarding_inputs, vtxo_inputs, total_amount) = self
+            .fetch_round_transaction_inputs(select_recoverable_vtxos)
+            .await?;
 
         tracing::debug!(
             offchain_adress = %to_address.encode(),
@@ -100,14 +101,16 @@ where
         rng: &mut R,
         to_address: Address,
         to_amount: Amount,
+        select_recoverable_vtxos: bool,
     ) -> Result<Txid, Error>
     where
         R: Rng + CryptoRng + Clone,
     {
         let (change_address, _) = self.get_offchain_address()?;
 
-        let (boarding_inputs, vtxo_inputs, total_amount) =
-            self.fetch_round_transaction_inputs().await?;
+        let (boarding_inputs, vtxo_inputs, total_amount) = self
+            .fetch_round_transaction_inputs(select_recoverable_vtxos)
+            .await?;
 
         let change_amount = total_amount.checked_sub(to_amount).ok_or_else(|| {
             Error::coin_select("cannot afford to send {to_amount}, only have {total_amount}")
@@ -157,6 +160,7 @@ where
     /// upcoming round.
     async fn fetch_round_transaction_inputs(
         &self,
+        select_recoverable_vtxos: bool,
     ) -> Result<(Vec<round::OnChainInput>, Vec<round::VtxoInput>, Amount), Error> {
         // Get all known boarding outputs.
         let boarding_outputs = self.inner.wallet.get_boarding_outputs()?;
@@ -197,7 +201,7 @@ where
             }
         }
 
-        let spendable_vtxos = self.spendable_vtxos().await?;
+        let spendable_vtxos = self.spendable_vtxos(select_recoverable_vtxos).await?;
 
         for (vtxo_outpoints, _) in spendable_vtxos.iter() {
             total_amount += vtxo_outpoints
@@ -215,6 +219,7 @@ where
                             vtxo.clone(),
                             vtxo_outpoint.amount,
                             vtxo_outpoint.outpoint,
+                            vtxo_outpoint.is_recoverable(),
                         )
                     })
                     .collect::<Vec<_>>()
@@ -242,6 +247,12 @@ where
 
         // Generate an (ephemeral) cosigner keypair.
         let own_cosigner_kp = Keypair::new(self.secp(), rng);
+
+        let onchain_input_outpoints = onchain_inputs
+            .iter()
+            .map(|i| i.outpoint())
+            .collect::<Vec<_>>();
+        let vtxo_input_outpoints = vtxo_inputs.iter().map(|i| i.outpoint()).collect::<Vec<_>>();
 
         let inputs = {
             let boarding_inputs = onchain_inputs.clone().into_iter().map(|o| {
@@ -304,15 +315,7 @@ where
             }
         }
 
-        // Depending on whether we are generating new VTXOs or not, we start in a different step of
-        // this state machine.
-        let mut step = match outputs
-            .iter()
-            .any(|o| matches!(o, proof_of_funds::Output::Offchain(_)))
-        {
-            true => RoundStep::Start,
-            false => RoundStep::RoundSigningNoncesGenerated,
-        };
+        let mut step = RoundStep::Start;
 
         let own_cosigner_kps = [own_cosigner_kp];
         let own_cosigner_pks = own_cosigner_kps
@@ -333,62 +336,168 @@ where
             self.kp(),
             sign_for_onchain_pk_fn,
             inputs,
-            outputs,
+            outputs.clone(),
             own_cosigner_pks.clone(),
         )?;
 
-        let request_id = self
+        let intent_id = self
             .network_client()
             .register_intent(&intent_message, &bip322_proof)
             .await?;
 
-        tracing::debug!(request_id, "Registered intent for round");
+        tracing::debug!(
+            intent_id,
+            ?onchain_input_outpoints,
+            ?vtxo_input_outpoints,
+            ?outputs,
+            "Registered intent for round"
+        );
 
         let network_client = self.network_client();
 
-        // The protocol expects us to ping the Ark server every 5 seconds to let the server know
-        // that we are still interested in joining the round.
-        //
-        // We generate a `RemoteHandle` so that the ping task is cancelled when the parent function
-        // ends.
-        let (ping_task, _ping_handle) = {
-            let network_client = network_client.clone();
-            async move {
-                loop {
-                    if let Err(e) = network_client.ping(request_id.clone()).await {
-                        tracing::warn!("Error via ping: {e:?}");
-                    }
+        let mut round_id: Option<String> = None;
 
-                    sleep(std::time::Duration::from_millis(5000)).await
-                }
-            }
-        }
-        .remote_handle();
+        let topics = vtxo_input_outpoints
+            .iter()
+            .map(ToString::to_string)
+            .chain(
+                own_cosigner_pks
+                    .iter()
+                    .map(|pk| pk.serialize().to_lower_hex_string()),
+            )
+            .collect();
 
-        spawn(ping_task);
-
-        let round = network_client.get_round("".to_string()).await?;
-        let round_id = round.map(|r| r.id);
-
-        let mut stream = network_client.get_event_stream().await?;
+        let mut stream = network_client.get_event_stream(topics).await?;
 
         let (ark_server_pk, _) = server_info.pk.x_only_public_key();
 
-        let mut unsigned_round_tx: Option<Psbt> = None;
-        let mut vtxo_tree: Option<TxTree> = None;
-        let mut our_nonce_trees: Option<HashMap<Keypair, NonceTree>> = None;
+        let mut unsigned_round_tx = None;
+
+        let mut vtxo_graph_chunks = Some(Vec::new());
+        let mut vtxo_graph: Option<TxGraph> = None;
+
+        let mut connectors_graph_chunks = Some(Vec::new());
+
+        let mut our_nonce_trees: Option<HashMap<Keypair, NonceKps>> = None;
         loop {
             match stream.next().await {
                 Some(Ok(event)) => match event {
-                    RoundStreamEvent::RoundSigning(e) => {
+                    RoundStreamEvent::BatchStarted(e) => {
                         if step != RoundStep::Start {
                             continue;
                         }
 
-                        tracing::info!(round_id = e.id, "Round signing started");
+                        let hash = sha256::Hash::hash(intent_id.as_bytes());
+                        let hash = hash.as_byte_array().to_vec().to_lower_hex_string();
 
-                        let unsigned_vtxo_tree =
-                            e.unsigned_vtxo_tree.expect("to have an unsigned vtxo tree");
+                        if e.intent_id_hashes.iter().any(|h| h == &hash) {
+                            self.network_client()
+                                .confirm_registration(intent_id.clone())
+                                .await?;
+
+                            tracing::info!(round_id = e.id, intent_id, "Intent ID found for round");
+
+                            round_id = Some(e.id);
+
+                            // Depending on whether we are generating new VTXOs or not, we continue
+                            // with a different step in the state machine.
+                            step = match outputs
+                                .iter()
+                                .any(|o| matches!(o, proof_of_funds::Output::Offchain(_)))
+                            {
+                                true => RoundStep::BatchStarted,
+                                false => RoundStep::RoundSigningNoncesGenerated,
+                            };
+                        } else {
+                            tracing::debug!(
+                                round_id = e.id,
+                                intent_id,
+                                "Intent ID not found for round"
+                            );
+                        }
+                    }
+                    RoundStreamEvent::TreeTx(e) => {
+                        if step != RoundStep::BatchStarted
+                            && step != RoundStep::RoundSigningNoncesGenerated
+                        {
+                            continue;
+                        }
+
+                        match e.batch_tree_event_type {
+                            BatchTreeEventType::Vtxo => {
+                                match &mut vtxo_graph_chunks {
+                                    Some(vtxo_graph_chunks) => {
+                                        vtxo_graph_chunks.push(e.tx_graph_chunk)
+                                    }
+                                    None => {
+                                        return Err(Error::ark_server(
+                                            "received unexpected VTXO graph chunk",
+                                        ))
+                                    }
+                                };
+                            }
+                            BatchTreeEventType::Connector => {
+                                match connectors_graph_chunks {
+                                    Some(ref mut connectors_graph_chunks) => {
+                                        connectors_graph_chunks.push(e.tx_graph_chunk)
+                                    }
+                                    None => {
+                                        return Err(Error::ark_server(
+                                            "received unexpected connectors graph chunk",
+                                        ))
+                                    }
+                                };
+                            }
+                        }
+                    }
+                    RoundStreamEvent::TreeSignature(e) => {
+                        if step != RoundStep::RoundSigningNoncesGenerated {
+                            continue;
+                        }
+
+                        match e.batch_tree_event_type {
+                            BatchTreeEventType::Vtxo => {
+                                match vtxo_graph {
+                                    Some(ref mut vtxo_graph) => {
+                                        vtxo_graph.apply(|graph| {
+                                            if graph.root().unsigned_tx.compute_txid() != e.txid {
+                                                Ok(true)
+                                            } else {
+                                                graph.set_signature(e.signature);
+
+                                                Ok(false)
+                                            }
+                                        })?;
+                                    }
+                                    None => {
+                                        return Err(Error::ark_server(
+                                            "received batch tree signature without TX graph",
+                                        ));
+                                    }
+                                };
+                            }
+                            BatchTreeEventType::Connector => {
+                                return Err(Error::ark_server(
+                                    "received batch tree signature for connectors tree",
+                                ));
+                            }
+                        }
+                    }
+                    RoundStreamEvent::TreeSigningStarted(e) => {
+                        if step != RoundStep::BatchStarted {
+                            continue;
+                        }
+
+                        let chunks = vtxo_graph_chunks.take().ok_or(Error::ark_server(
+                            "received tree signing started event without VTXO graph chunks",
+                        ))?;
+                        vtxo_graph = Some(
+                            TxGraph::new(chunks)
+                                .map_err(Error::from)
+                                .context("failed to build VTXO graph before generating nonces")?,
+                        );
+
+                        tracing::info!(round_id = e.id, "Round signing started");
 
                         for own_cosigner_pk in own_cosigner_pks.iter() {
                             if !&e.cosigners_pubkeys.iter().any(|p| p == own_cosigner_pk) {
@@ -404,7 +513,7 @@ where
                             let own_cosigner_pk = own_cosigner_kp.public_key();
                             let nonce_tree = generate_nonce_tree(
                                 rng,
-                                &unsigned_vtxo_tree,
+                                vtxo_graph.as_ref().expect("VTXO graph"),
                                 own_cosigner_pk,
                                 &e.unsigned_round_tx,
                             )
@@ -420,7 +529,7 @@ where
                                 .submit_tree_nonces(
                                     &e.id,
                                     own_cosigner_pk,
-                                    nonce_tree.to_pub_nonce_tree().into_inner(),
+                                    nonce_tree.to_nonce_pks(),
                                 )
                                 .await
                                 .map_err(Error::ark_server)
@@ -429,21 +538,18 @@ where
                             our_nonce_tree_map.insert(own_cosigner_kp, nonce_tree);
                         }
 
-                        our_nonce_trees = Some(our_nonce_tree_map);
-
-                        vtxo_tree = Some(unsigned_vtxo_tree);
-
                         unsigned_round_tx = Some(e.unsigned_round_tx);
+                        our_nonce_trees = Some(our_nonce_tree_map);
 
                         step = step.next();
                         continue;
                     }
-                    RoundStreamEvent::RoundSigningNoncesGenerated(e) => {
+                    RoundStreamEvent::TreeNoncesAggregated(e) => {
                         if step != RoundStep::RoundSigningStarted {
                             continue;
                         }
 
-                        let agg_pub_nonce_tree = PubNonceTree::from(e.tree_nonces);
+                        let agg_pub_nonce_tree = e.tree_nonces;
 
                         tracing::debug!(
                             round_id = e.id,
@@ -451,23 +557,33 @@ where
                             "Round combined nonces generated"
                         );
 
-                        let unsigned_round_tx = unsigned_round_tx
-                            .as_ref()
-                            .ok_or(Error::ark_server("missing round TX during round protocol"))?;
-
-                        let vtxo_tree = vtxo_tree
-                            .as_ref()
-                            .ok_or(Error::ark_server("missing vtxo tree during round protocol"))?;
                         let our_nonce_trees = our_nonce_trees.take().ok_or(Error::ark_server(
                             "missing nonce tree during round protocol",
                         ))?;
+
+                        let vtxo_graph = match vtxo_graph {
+                            Some(ref vtxo_graph) => vtxo_graph,
+                            None => {
+                                let chunks = vtxo_graph_chunks.take().ok_or(Error::ark_server(
+                                    "received tree nonces aggregated event without VTXO graph chunks",
+                                ))?;
+
+                                &TxGraph::new(chunks)
+                                    .map_err(Error::from)
+                                    .context("failed to build VTXO graph before tree signing")?
+                            }
+                        };
+
+                        let unsigned_round_tx = unsigned_round_tx
+                            .as_ref()
+                            .ok_or_else(|| Error::ad_hoc("missing round TX"))?;
 
                         for (cosigner_kp, our_nonce_tree) in our_nonce_trees {
                             let partial_sig_tree = sign_vtxo_tree(
                                 server_info.vtxo_tree_expiry,
                                 ark_server_pk,
                                 &cosigner_kp,
-                                vtxo_tree,
+                                vtxo_graph,
                                 unsigned_round_tx,
                                 our_nonce_tree,
                                 &agg_pub_nonce_tree,
@@ -479,7 +595,7 @@ where
                                 .submit_tree_signatures(
                                     &e.id,
                                     cosigner_kp.public_key(),
-                                    partial_sig_tree.into_inner(),
+                                    partial_sig_tree,
                                 )
                                 .await
                                 .map_err(Error::ark_server)
@@ -488,27 +604,40 @@ where
 
                         step = step.next();
                     }
-                    RoundStreamEvent::RoundFinalization(e) => {
+                    RoundStreamEvent::BatchFinalization(e) => {
                         if step != RoundStep::RoundSigningNoncesGenerated {
                             continue;
                         }
-                        tracing::debug!(round_id = e.id, "Round finalization started");
 
-                        let signed_forfeit_psbts = create_and_sign_forfeit_txs(
-                            self.kp(),
-                            vtxo_inputs.as_slice(),
-                            e.connector_tree,
-                            &e.connectors_index,
-                            e.min_relay_fee_rate,
-                            &server_info.forfeit_address,
-                            server_info.dust,
-                        )
-                        .map_err(Error::from)?;
+                        let signed_forfeit_psbts = if !vtxo_inputs.is_empty() {
+                            let chunks =
+                                connectors_graph_chunks.take().ok_or(Error::ark_server(
+                                    "received batch finalization event without connectors",
+                                ))?;
+
+                            let connectors_graph =
+                                TxGraph::new(chunks).map_err(Error::from).context(
+                                    "failed to build connectors graph before signing forfeit TXs",
+                                )?;
+
+                            tracing::debug!(round_id = e.id, "Round finalization started");
+
+                            create_and_sign_forfeit_txs(
+                                self.kp(),
+                                vtxo_inputs.as_slice(),
+                                &connectors_graph.leaves(),
+                                &server_info.forfeit_address,
+                                server_info.dust,
+                            )
+                            .map_err(Error::from)?
+                        } else {
+                            Vec::new()
+                        };
 
                         let round_psbt = if onchain_inputs.is_empty() {
                             None
                         } else {
-                            let mut round_psbt = e.round_tx;
+                            let mut round_psbt = e.commitment_tx;
 
                             let sign_for_pk_fn = |pk: &XOnlyPublicKey,
                                                   msg: &secp256k1::Message|
@@ -534,21 +663,21 @@ where
 
                         step = step.next();
                     }
-                    RoundStreamEvent::RoundFinalized(e) => {
+                    RoundStreamEvent::BatchFinalized(e) => {
                         if step != RoundStep::RoundFinalization {
                             continue;
                         }
 
-                        let round_txid = e.round_txid;
+                        let round_txid = e.commitment_txid;
 
                         tracing::info!(round_id = e.id, %round_txid, "Round finalized");
 
                         return Ok(round_txid);
                     }
-                    RoundStreamEvent::RoundFailed(ref e) => {
+                    RoundStreamEvent::BatchFailed(ref e) => {
                         if Some(&e.id) == round_id.as_ref() {
                             return Err(Error::ark_server(format!(
-                                "failed registering in round {}: {}",
+                                "batch failed {}: {}",
                                 e.id, e.reason
                             )));
                         }
@@ -570,6 +699,7 @@ where
         #[derive(Debug, PartialEq, Eq)]
         enum RoundStep {
             Start,
+            BatchStarted,
             RoundSigningStarted,
             RoundSigningNoncesGenerated,
             RoundFinalization,
@@ -579,7 +709,8 @@ where
         impl RoundStep {
             fn next(&self) -> RoundStep {
                 match self {
-                    RoundStep::Start => RoundStep::RoundSigningStarted,
+                    RoundStep::Start => RoundStep::BatchStarted,
+                    RoundStep::BatchStarted => RoundStep::RoundSigningStarted,
                     RoundStep::RoundSigningStarted => RoundStep::RoundSigningNoncesGenerated,
                     RoundStep::RoundSigningNoncesGenerated => RoundStep::RoundFinalization,
                     RoundStep::RoundFinalization => RoundStep::Finalized,

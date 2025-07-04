@@ -1,4 +1,4 @@
-use crate::redeem::anchor_output;
+use crate::anchor_output;
 use crate::server;
 use crate::BoardingOutput;
 use crate::Error;
@@ -247,7 +247,7 @@ pub fn create_unilateral_exit_transaction(
     Ok(tx)
 }
 
-/// Build the unilateral exit tree of TXIDs for a VTXO from a [`sever::VtxoChains`].
+/// Build the unilateral exit tree of TXIDs for a VTXO from a [`server::VtxoChains`].
 pub fn build_unilateral_exit_tree_txids(
     vtxo_chains: &server::VtxoChains,
     // The TXID of the VTXO we want to commit on-chain.
@@ -277,7 +277,7 @@ pub fn build_unilateral_exit_tree_txids(
 
         // Safety check to reject cycles.
         if visited.contains(&current_txid) {
-            return Err(Error::ad_hoc("chain traversal lead to cycle"));
+            return Err(Error::ad_hoc("chain traversal led to cycle"));
         }
         visited.insert(current_txid);
 
@@ -291,18 +291,27 @@ pub fn build_unilateral_exit_tree_txids(
         // Check if any of the transactions spent by this virtual TX are the commitment transaction.
         let mut reached_commitment = false;
 
-        for chained_tx in &chain.spends {
-            match chained_tx.tx_type {
+        for &parent_txid in &chain.spends {
+            // Look up the parent transaction's chain to get its type
+            let parent_chain = chain_map.get(&parent_txid).ok_or_else(|| {
+                Error::ad_hoc(format!(
+                    "could not find VtxoChain for parent TXID: {parent_txid}",
+                ))
+            })?;
+
+            match parent_chain.tx_type {
                 server::ChainedTxType::Commitment => {
                     // We've reached our destination.
                     all_paths.push(current_path.clone());
 
                     reached_commitment = true;
                 }
-                server::ChainedTxType::Virtual => {
-                    // Continue traversing virtual transactions up the tree.
+                server::ChainedTxType::Virtual
+                | server::ChainedTxType::Checkpoint
+                | server::ChainedTxType::Tree => {
+                    // Continue traversing virtual/checkpoint/tree transactions up the tree.
                     find_paths_to_commitment(
-                        chained_tx.txid,
+                        parent_txid,
                         chain_map,
                         current_path,
                         all_paths,
@@ -311,14 +320,14 @@ pub fn build_unilateral_exit_tree_txids(
                 }
                 server::ChainedTxType::Unspecified => {
                     tracing::warn!(
-                        txid = %chained_tx.txid,
+                        txid = %parent_txid,
                         "Found unspecified TX type when walking up virtual TX tree. \
                          Treating it like a virtual TX"
                     );
 
                     // Continue traversing virtual transactions up the tree.
                     find_paths_to_commitment(
-                        chained_tx.txid,
+                        parent_txid,
                         chain_map,
                         current_path,
                         all_paths,
@@ -375,8 +384,10 @@ pub fn build_unilateral_exit_tree_txids(
 /// We use the word "tree" because a VTXO may come from more than one path i.e. if its corresponding
 /// virtual transaction has more than one input!
 pub struct UnilateralExitTree {
-    /// The commitment transaction from which this VTXO comes from.
-    round_txid: Txid,
+    /// The commitment transactions from which this VTXO comes from.
+    ///
+    /// A pre-confirmed VTXO can have ancestors from more than one batch, hence the list.
+    commitment_txids: Vec<Txid>,
     /// The chains of virtual transactions that lead to a VTXO.
     ///
     /// Virtual TXs in a branch are ordered by distance to the root commitment transaction, with
@@ -385,26 +396,26 @@ pub struct UnilateralExitTree {
 }
 
 impl UnilateralExitTree {
-    pub fn new(round_txid: Txid, virtual_tx_branches: Vec<Vec<Psbt>>) -> Self {
+    pub fn new(commitment_txids: Vec<Txid>, virtual_tx_branches: Vec<Vec<Psbt>>) -> Self {
         Self {
-            round_txid,
+            commitment_txids,
             inner: virtual_tx_branches,
         }
     }
 
-    pub fn round_txid(&self) -> Txid {
-        self.round_txid
-    }
-
     pub fn inner(&self) -> &Vec<Vec<Psbt>> {
         &self.inner
+    }
+
+    pub fn commitment_txids(&self) -> &[Txid] {
+        &self.commitment_txids
     }
 }
 
 /// Sign all the transactions needed to commit a VTXO on-chain.
 pub fn sign_unilateral_exit_tree(
     unilateral_exit_tree: &UnilateralExitTree,
-    round_tx: &Transaction,
+    commitment_txs: &[Transaction],
 ) -> Result<Vec<Vec<Transaction>>, Error> {
     let mut signed_virtual_tx_branches = Vec::new();
     for unilateral_exit_branch in unilateral_exit_tree.inner.iter() {
@@ -419,7 +430,7 @@ pub fn sign_unilateral_exit_tree(
                 unilateral_exit_branch
                     .iter()
                     .map(|p| &p.unsigned_tx)
-                    .chain(std::iter::once(round_tx))
+                    .chain(commitment_txs.iter())
                     .find_map(|other_psbt| {
                         (other_psbt.compute_txid() == vtxo_previous_output.txid).then_some(
                             other_psbt.output[vtxo_previous_output.vout as usize].clone(),

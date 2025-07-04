@@ -1,5 +1,7 @@
 use bitcoin::Amount;
 use bitcoin::OutPoint;
+use bitcoin::ScriptBuf;
+use bitcoin::TxOut;
 
 pub mod boarding_output;
 pub mod coin_select;
@@ -13,19 +15,20 @@ pub mod vtxo;
 
 mod ark_address;
 mod error;
-mod forfeit_fee;
 mod history;
 mod internal_node;
 mod script;
+mod tx_graph;
 
 pub use ark_address::ArkAddress;
 pub use boarding_output::BoardingOutput;
 pub use error::Error;
 pub use error::ErrorContext;
-pub use history::generate_incoming_vtxo_transaction_history;
-pub use history::generate_outgoing_vtxo_transaction_history;
+pub use history::sort_transactions_by_created_at;
 pub use history::ArkTransaction;
 pub use script::extract_sequence_from_csv_sig_script;
+pub use tx_graph::TxGraph;
+pub use tx_graph::TxGraphChunk;
 pub use unilateral_exit::build_anchor_tx;
 pub use unilateral_exit::build_unilateral_exit_tree_txids;
 pub use unilateral_exit::SelectedUtxo;
@@ -37,6 +40,8 @@ pub const UNSPENDABLE_KEY: &str =
 
 pub const VTXO_INPUT_INDEX: usize = 0;
 
+const ANCHOR_SCRIPT_PUBKEY: [u8; 4] = [0x51, 0x02, 0x4e, 0x73];
+
 /// Information a UTXO that may be extracted from an on-chain explorer.
 #[derive(Clone, Copy, Debug)]
 pub struct ExplorerUtxo {
@@ -44,4 +49,13 @@ pub struct ExplorerUtxo {
     pub amount: Amount,
     pub confirmation_blocktime: Option<u64>,
     pub is_spent: bool,
+}
+
+pub fn anchor_output() -> TxOut {
+    let script_pubkey = ScriptBuf::from_bytes(ANCHOR_SCRIPT_PUBKEY.to_vec());
+
+    TxOut {
+        value: Amount::ZERO,
+        script_pubkey,
+    }
 }

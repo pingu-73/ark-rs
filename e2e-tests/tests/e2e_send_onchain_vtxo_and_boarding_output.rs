@@ -14,6 +14,9 @@ use std::sync::Arc;
 
 mod common;
 
+// This test is expected to fail until we use an arkd server with patch
+// ebee8c6d4d579a4285d4d4f3fc40ddb3e745d8af.
+
 #[tokio::test]
 #[ignore]
 pub async fn send_onchain_vtxo_and_boarding_output() {
@@ -53,7 +56,7 @@ pub async fn send_onchain_vtxo_and_boarding_output() {
 
     assert_eq!(offchain_balance.total(), Amount::ZERO);
 
-    alice.board(&mut rng).await.unwrap();
+    alice.board(&mut rng, false).await.unwrap();
     wait_until_balance(&alice, fund_amount, Amount::ZERO).await;
 
     // Ensure that the round TX is mined.

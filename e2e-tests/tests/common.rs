@@ -77,7 +77,7 @@ impl BitcoinRpc {
 
         if response_text.contains("failed") {
             return Err(Error::wallet(format!(
-                "Bitcoin RPC submitpackage failed: {response_text}"
+                "Bitcoin RPC submitpackage failed: {response_text}",
             )));
         }
 
@@ -87,7 +87,7 @@ impl BitcoinRpc {
 
         if let Some(error) = rpc_response.get("error") {
             return Err(Error::wallet(format!(
-                "Bitcoin RPC submitpackage error: {error}"
+                "Bitcoin RPC submitpackage error: {error}",
             )));
         }
 
