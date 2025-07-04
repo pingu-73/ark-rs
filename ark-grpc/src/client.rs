@@ -121,7 +121,7 @@ impl Client {
             .vtxos
             .iter()
             .filter_map(|vtxo| {
-                if vtxo.is_redeemed || vtxo.is_spent || vtxo.is_swept {
+                if vtxo.is_unrolled || vtxo.is_spent || vtxo.is_swept {
                     Some(VtxoOutPoint::try_from(vtxo))
                 } else {
                     None
@@ -134,7 +134,7 @@ impl Client {
             .vtxos
             .iter()
             .filter_map(|vtxo| {
-                if !vtxo.is_redeemed && !vtxo.is_spent && !vtxo.is_swept {
+                if !vtxo.is_unrolled && !vtxo.is_spent && !vtxo.is_swept {
                     Some(VtxoOutPoint::try_from(vtxo))
                 } else {
                     None
@@ -144,7 +144,7 @@ impl Client {
 
         let mut spent_by_redeem = Vec::new();
         for spendable_vtxo in spendable.clone() {
-            let was_spent_by_redeem = spendable.iter().any(|v| v.is_redeemed);
+            let was_spent_by_redeem = spendable.iter().any(|v| v.is_unrolled);
 
             if was_spent_by_redeem {
                 spent_by_redeem.push(spendable_vtxo);

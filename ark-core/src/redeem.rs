@@ -414,7 +414,9 @@ where
         sighash_type: TapSighashType::Default,
     };
 
-    psbt_input.tap_script_sigs = BTreeMap::from_iter([((pk, leaf_hash), sig)]);
+    // FIXME(server): We were able to delete the server's signature here and it did not complain. We
+    // were then unable to perform unilateral exit (same for the server I think).
+    psbt_input.tap_script_sigs.insert((pk, leaf_hash), sig);
 
     Ok(())
 }

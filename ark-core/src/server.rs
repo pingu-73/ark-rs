@@ -123,7 +123,7 @@ pub struct VtxoOutPoint {
     /// in a batch.
     pub is_preconfirmed: bool,
     pub is_swept: bool,
-    pub is_redeemed: bool,
+    pub is_unrolled: bool,
     pub is_spent: bool,
     pub spent_by: Option<Txid>,
     pub commitment_txids: Vec<Txid>,

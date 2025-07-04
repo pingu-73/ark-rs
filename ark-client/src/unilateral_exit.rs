@@ -68,11 +68,6 @@ where
                 // We don't want to fetch transactions more than once.
                 let txs = HashSet::<Txid>::from_iter(paths.concat().into_iter());
 
-                // FIXME: Checkpoint transactions are not being returned here. Also manually tested
-                // with REST API:
-                //
-                // curl -X GET "http://localhost:7070/v1/virtualTx/txid?page.size=10&page.index=0" -H "Accept: application/json"
-
                 let virtual_txs_response = self
                     .network_client()
                     .get_virtual_txs(txs.iter().map(|tx| tx.to_string()).collect(), None)
@@ -100,12 +95,8 @@ where
                     })
                     .collect::<Result<Vec<_>, _>>()?;
 
-                // FIXME: I think the newly introduced `commitment_txids` field signals that any
-                // VTXO could have more than one commitment transaction as an ancestor! As such, it
-                // is not enough to build the unilateral exit tree assuming that there is only one
-                // commitment transaction.
                 let unilateral_exit_tree =
-                    UnilateralExitTree::new(virtual_tx_outpoint.commitment_txids[0], paths);
+                    UnilateralExitTree::new(virtual_tx_outpoint.commitment_txids, paths);
 
                 unilateral_exit_trees.push(unilateral_exit_tree);
             }
@@ -113,15 +104,23 @@ where
 
         let mut branches: Vec<Vec<Transaction>> = Vec::new();
         for unilateral_exit_tree in unilateral_exit_trees {
-            let round_txid = unilateral_exit_tree.round_txid();
+            let commitment_txids = unilateral_exit_tree.commitment_txids();
 
-            let round_tx = self
-                .blockchain()
-                .find_tx(&round_txid)
-                .await?
-                .ok_or_else(|| Error::ad_hoc(format!("could not find round TX {round_txid}")))?;
+            let mut commitment_txs = Vec::new();
+            for commitment_txid in commitment_txids.iter() {
+                let commitment_tx = self
+                    .blockchain()
+                    .find_tx(commitment_txid)
+                    .await?
+                    .ok_or_else(|| {
+                        Error::ad_hoc(format!("could not find commitment TX {commitment_txid}"))
+                    })?;
+
+                commitment_txs.push(commitment_tx);
+            }
+
             let signed_unilateral_exit_tree =
-                sign_unilateral_exit_tree(&unilateral_exit_tree, &round_tx)?;
+                sign_unilateral_exit_tree(&unilateral_exit_tree, commitment_txs.as_slice())?;
             branches.extend(signed_unilateral_exit_tree);
         }
 

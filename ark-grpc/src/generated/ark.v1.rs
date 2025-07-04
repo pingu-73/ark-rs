@@ -37,26 +37,42 @@ pub struct Vtxo {
     #[prost(string, repeated, tag = "6")]
     pub commitment_txids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     #[prost(bool, tag = "7")]
-    pub preconfirmed: bool,
+    pub is_preconfirmed: bool,
     #[prost(bool, tag = "8")]
-    pub swept: bool,
+    pub is_swept: bool,
     #[prost(bool, tag = "9")]
-    pub redeemed: bool,
+    pub is_unrolled: bool,
     #[prost(bool, tag = "10")]
-    pub spent: bool,
+    pub is_spent: bool,
     #[prost(string, tag = "11")]
     pub spent_by: ::prost::alloc::string::String,
+    #[prost(string, tag = "12")]
+    pub settled_by: ::prost::alloc::string::String,
+    #[prost(string, tag = "13")]
+    pub ark_txid: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TxData {
+    #[prost(string, tag = "1")]
+    pub txid: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub tx: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TxNotification {
     #[prost(string, tag = "1")]
     pub txid: ::prost::alloc::string::String,
-    #[prost(message, repeated, tag = "2")]
-    pub spent_vtxos: ::prost::alloc::vec::Vec<Vtxo>,
+    #[prost(string, tag = "2")]
+    pub tx: ::prost::alloc::string::String,
     #[prost(message, repeated, tag = "3")]
+    pub spent_vtxos: ::prost::alloc::vec::Vec<Vtxo>,
+    #[prost(message, repeated, tag = "4")]
     pub spendable_vtxos: ::prost::alloc::vec::Vec<Vtxo>,
-    #[prost(string, tag = "5")]
-    pub hex: ::prost::alloc::string::String,
+    /// This field is set only in case of offchain tx.
+    ///
+    /// key: outpoint, value: checkpoint txid
+    #[prost(map = "string, message", tag = "5")]
+    pub checkpoint_txs: ::std::collections::HashMap<::prost::alloc::string::String, TxData>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Tapscripts {
@@ -1267,13 +1283,17 @@ pub struct IndexerVtxo {
     #[prost(bool, tag = "7")]
     pub is_swept: bool,
     #[prost(bool, tag = "8")]
-    pub is_redeemed: bool,
+    pub is_unrolled: bool,
     #[prost(bool, tag = "9")]
     pub is_spent: bool,
     #[prost(string, tag = "10")]
     pub spent_by: ::prost::alloc::string::String,
     #[prost(string, repeated, tag = "11")]
     pub commitment_txids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, tag = "12")]
+    pub settled_by: ::prost::alloc::string::String,
+    #[prost(string, tag = "13")]
+    pub ark_txid: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct IndexerChain {
@@ -1366,6 +1386,17 @@ pub struct GetSubscriptionResponse {
     pub new_vtxos: ::prost::alloc::vec::Vec<IndexerVtxo>,
     #[prost(message, repeated, tag = "4")]
     pub spent_vtxos: ::prost::alloc::vec::Vec<IndexerVtxo>,
+    #[prost(string, tag = "5")]
+    pub tx: ::prost::alloc::string::String,
+    #[prost(map = "string, message", tag = "6")]
+    pub checkpoint_txs: ::std::collections::HashMap<::prost::alloc::string::String, IndexerTxData>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct IndexerTxData {
+    #[prost(string, tag = "1")]
+    pub txid: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub tx: ::prost::alloc::string::String,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
