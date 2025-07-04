@@ -67,8 +67,7 @@ impl TxGraph {
 
         if root_txids.len() > 1 {
             return Err(Error::ad_hoc(format!(
-                "multiple root chunks found: {:?}",
-                root_txids
+                "multiple root chunks found: {root_txids:?}",
             )));
         }
 
@@ -81,8 +80,8 @@ impl TxGraph {
         let node_count = graph.nb_of_nodes();
         if node_count != chunk_count {
             return Err(Error::ad_hoc(format!(
-                "number of chunks ({}) is not equal to the number of nodes in the graph ({})",
-                chunk_count, node_count
+                "number of chunks ({chunk_count}) is not equal to \
+                 the number of nodes in the graph ({node_count})",
             )));
         }
 
