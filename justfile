@@ -107,6 +107,10 @@ arkd-setup:
 
     set -euxo pipefail
 
+    echo "Starting redis"
+
+    just arkd-redis-run
+
     echo "Running arkd from $ARKD_WALLET_DIR"
 
     just arkd-wallet-run
@@ -134,6 +138,18 @@ arkd-patch-makefile:
     else
         # Linux
         sed -i 's/ARK_ROUND_INTERVAL=[0-9][0-9]*/ARK_ROUND_INTERVAL=30/' Makefile
+    fi
+
+# Start arkd redis if necessary.
+arkd-redis-run:
+    #!/usr/bin/env bash
+    set -euxo pipefail
+
+    if netstat -tlnp | grep :6379 > /dev/null 2>&1; then
+        echo "Redis is already running on port 6379"
+    else
+        make redis-up -C $ARKD_DIR &
+        echo "arkd redis started"
     fi
 
 # Start `arkd-wallet` binary.
@@ -222,17 +238,21 @@ arkd-wallet-kill:
     [ ! -e "{{ arkd_wallet_logs }}" ] || mv -f {{ arkd_wallet_logs }} {{ arkd_wallet_logs }}.old
 
 # Restart `arkd-wallet` and `arkd`.
-arkd-restart: arkd-kill arkd-wallet-kill arkd-wallet-run arkd-run
+arkd-restart: arkd-kill arkd-wallet-kill arkd-redis-wipe arkd-redis-run arkd-wallet-run arkd-run
 
 # Wipe `arkd` data directory.
 arkd-wipe:
-    @echo Clearing arkd in $ARKD_DIR/data
+    @echo Clearing $ARKD_DIR/data
     rm -rf $ARKD_DIR/data
 
 # Wipe `arkd-wallet` data directory.
 arkd-wallet-wipe:
-    @echo Clearing arkd in $ARKD_WALLET_DIR/data
+    @echo Clearing $ARKD_WALLET_DIR/data
     rm -rf $ARKD_WALLET_DIR/data
+
+arkd-redis-wipe:
+    @echo Stopping and clearing arkd redis
+    make redis-down -C $ARKD_DIR &
 
 _create-arkd-wallet:
     #!/usr/bin/env bash
