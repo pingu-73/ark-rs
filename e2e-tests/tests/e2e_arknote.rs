@@ -61,7 +61,7 @@ pub async fn e2e_arknote_redemption() {
     let tx_out = arknote.to_tx_out();
     assert_eq!(tx_out.value, fund_amount);
 
-    alice.settle_arknote(arknote).await.unwrap();
+    alice.settle(arknote).await.unwrap();
 
     tracing::info!("ArkNote redemption test completed successfully");
 }

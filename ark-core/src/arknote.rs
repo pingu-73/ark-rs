@@ -47,7 +47,8 @@ pub trait ExtendedCoin {
 
 impl fmt::Display for ArkNote {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value = self.to_string();
+        let encoded = self.encode();
+        let value = format!("{}{}", self.hrp, bs58::encode(encoded).into_string());
         write!(f, "{value}")
     }
 }
@@ -230,15 +231,10 @@ impl ArkNote {
         Self::decode_with_hrp(&decoded, hrp)
     }
 
-    /// Convert ArkNote to string representation
-    pub fn to_string(&self) -> String {
-        let encoded = self.encode();
-        format!("{}{}", self.hrp, bs58::encode(encoded).into_string())
-    }
-
     /// Get the outpoint for this ArkNote
     pub fn outpoint(&self) -> OutPoint {
-        let txid = bitcoin::Txid::from_slice(&hex::decode(&self.txid).unwrap()).unwrap();
+        let txid = bitcoin::Txid::from_slice(&hex::decode(&self.txid).expect("valid hex string"))
+            .expect("valid txid");
         OutPoint::new(txid, FAKE_OUTPOINT_INDEX)
     }
 
