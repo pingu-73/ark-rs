@@ -107,6 +107,10 @@ jobs:
           cd $ARKD_DIR
           go work sync
 
+      - name: Start redis
+        run: |
+          just arkd-redis-run
+
       - name: Build arkd
         run: |
           just arkd-build
