@@ -5,6 +5,7 @@ members = [
   "ark-grpc",
   "ark-rest",
   "ark-bdk-wallet",
+  "ark-lightning",
   "e2e-tests",
   "ark-sample",
   "ark-rust-secp256k1",

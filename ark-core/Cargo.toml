@@ -5,6 +5,9 @@ edition = "2021"
 license = "MIT"
 description = "Core types and utilities for Ark"
 
+[features]
+default = []
+
 [dependencies]
 bech32 = "0.11"
 bitcoin = { version = "0.32.4", features = ["base64", "rand", "serde"] }
@@ -13,6 +16,7 @@ rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tracing = "0.1.37"
+hex = "0.4"
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { version = "0.2", features = ["wasm-bindgen", "js"] }

@@ -9,6 +9,7 @@ ark-rs is a collection of Rust crates designed to simplify building Bitcoin wall
 - `ark-grpc`: gRPC client for Ark server communication
 - `ark-rest`: REST client for Ark server communication
 - `ark-bdk-wallet`: Bitcoin Development Kit (BDK) integration for Ark wallets
+- `ark-lightning`: Lightning Network integration for Ark protocol through submarine swaps
 - `e2e-tests`: End-to-end test suite
 
 ## Install

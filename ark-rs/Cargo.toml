@@ -9,8 +9,10 @@ description = "Collection of Rust crates designed to simplify building Bitcoin w
 ark-client = { path = "../ark-client", version = "0.7.0", optional = true }
 ark-core = { path = "../ark-core", version = "0.7.0" }
 ark-grpc = { path = "../ark-grpc", version = "0.7.0", optional = true }
+ark-lightning = { path = "../ark-lightning", version = "0.7.0", optional = true }
 
 [features]
 default = []
 client = ["ark-client"]
 grpc = ["ark-grpc"]
+lightning = ["ark-lightning"]
