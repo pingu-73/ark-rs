@@ -1,8 +1,8 @@
 //! Utility functions for Lightning swaps
 
-use crate::BitcoinNetwork;
-use crate::LightningSwapError;
-use crate::LightningSwapResult;
+use crate::lightning::BitcoinNetwork;
+use crate::lightning::LightningSwapError;
+use crate::lightning::LightningSwapResult;
 use bitcoin::Transaction;
 use std::future::Future;
 use std::pin::Pin;

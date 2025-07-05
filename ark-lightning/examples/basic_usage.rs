@@ -1,18 +1,20 @@
-use ark_lightning::{ArkadeLightning, ArkadeLightningConfig, SendPaymentArgs};
+use ark_lightning::ArkadeLightning;
+use ark_lightning::ArkadeLightningConfig;
+use ark_lightning::SendPaymentArgs;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // This is a basic example of how to use the ark-lightning crate
     // Note: You'll need to implement your own Wallet and SwapProvider
-    
+
     // Create a configuration for the lightning client
     let config = ArkadeLightningConfig {
-        wallet: Box::new(MockWallet), // Your wallet implementation
+        wallet: Box::new(MockWallet),              // Your wallet implementation
         swap_provider: Box::new(MockSwapProvider), // Your swap provider implementation
-        refund_handler: None, // Optional refund handler
-        timeout_config: None, // Optional timeout configuration
-        fee_config: None,     // Optional fee configuration
-        retry_config: None,   // Optional retry configuration
+        refund_handler: None,                      // Optional refund handler
+        timeout_config: None,                      // Optional timeout configuration
+        fee_config: None,                          // Optional fee configuration
+        retry_config: None,                        // Optional retry configuration
     };
 
     // Create the lightning client
@@ -33,8 +35,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         invoice: invoice.to_string(),
         source_vtxos: None, // Optional: specify which VTXOs to use
     };
-    
-    let result = lightning_client.send_lightning_payment(payment_args).await?;
+
+    let result = lightning_client
+        .send_lightning_payment(payment_args)
+        .await?;
     println!("Payment sent successfully! Preimage: {}", result.preimage);
 
     Ok(())

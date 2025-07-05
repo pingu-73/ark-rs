@@ -1,14 +1,14 @@
 //! Traits for Lightning swaps integration
 
-use crate::BitcoinNetwork;
-use crate::BoltzSwapStatusResponse;
-use crate::BroadcastResult;
-use crate::CreateInvoiceArgs;
-use crate::DecodedInvoice;
-use crate::LightningSwapResult;
-use crate::SubmarineSwapResponse;
-use crate::SwapData;
-use crate::Vtxo;
+use crate::lightning::BitcoinNetwork;
+use crate::lightning::BoltzSwapStatusResponse;
+use crate::lightning::BroadcastResult;
+use crate::lightning::CreateInvoiceArgs;
+use crate::lightning::DecodedInvoice;
+use crate::lightning::LightningSwapResult;
+use crate::lightning::SubmarineSwapResponse;
+use crate::lightning::SwapData;
+use crate::lightning::Vtxo;
 use async_trait::async_trait;
 use bitcoin::Transaction;
 

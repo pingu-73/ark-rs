@@ -3,13 +3,19 @@
 //! This module provides a concrete implementation of the SwapProvider trait
 //! using the Boltz Lightning Network swap service via HTTP API.
 
-use crate::{
-    BitcoinNetwork, BoltzSwapStatusResponse, CreateInvoiceArgs, LightningSwapError, LightningSwapResult, 
-    SubmarineSwapResponse, SwapData, SwapProvider, SwapTransaction,
-};
+use crate::BitcoinNetwork;
+use crate::BoltzSwapStatusResponse;
+use crate::CreateInvoiceArgs;
+use crate::LightningSwapError;
+use crate::LightningSwapResult;
+use crate::SubmarineSwapResponse;
+use crate::SwapData;
+use crate::SwapProvider;
+use crate::SwapTransaction;
 use async_trait::async_trait;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use std::collections::HashMap;
 
 /// Boltz API request for creating a submarine swap
@@ -94,10 +100,7 @@ impl BoltzSwapProvider {
     pub fn new(config: BoltzConfig) -> LightningSwapResult<Self> {
         let client = Client::new();
 
-        Ok(Self {
-            client,
-            config,
-        })
+        Ok(Self { client, config })
     }
 
     /// Create a new Boltz swap provider with default configuration
@@ -189,23 +192,27 @@ impl SwapProvider for BoltzSwapProvider {
         };
 
         let url = format!("{}/createswap", self.config.api_url);
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .json(&request)
             .send()
             .await
-            .map_err(|e| LightningSwapError::NetworkError(
-                format!("Failed to create submarine swap: {}", e)
-            ))?;
+            .map_err(|e| {
+                LightningSwapError::NetworkError(format!("Failed to create submarine swap: {}", e))
+            })?;
 
         let response_text = response.text().await.map_err(|e| {
             LightningSwapError::NetworkError(format!("Failed to read response: {}", e))
         })?;
 
-        let swap_response: CreateSwapResponse = serde_json::from_str(&response_text)
-            .map_err(|e| LightningSwapError::InvalidSwapResponse(
-                format!("Failed to parse swap response: {}", e)
-            ))?;
+        let swap_response: CreateSwapResponse =
+            serde_json::from_str(&response_text).map_err(|e| {
+                LightningSwapError::InvalidSwapResponse(format!(
+                    "Failed to parse swap response: {}",
+                    e
+                ))
+            })?;
 
         Ok(swap_response.into())
     }
@@ -215,7 +222,10 @@ impl SwapProvider for BoltzSwapProvider {
         args: &CreateInvoiceArgs,
         claim_pubkey: &str,
     ) -> LightningSwapResult<SubmarineSwapResponse> {
-        tracing::debug!("Creating reverse submarine swap for {} sats", args.amount_sats);
+        tracing::debug!(
+            "Creating reverse submarine swap for {} sats",
+            args.amount_sats
+        );
 
         let request = CreateReverseSwapRequest {
             r#type: "reversesubmarine".to_string(),
@@ -228,54 +238,62 @@ impl SwapProvider for BoltzSwapProvider {
         };
 
         let url = format!("{}/createswap", self.config.api_url);
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .json(&request)
             .send()
             .await
-            .map_err(|e| LightningSwapError::NetworkError(
-                format!("Failed to create reverse submarine swap: {}", e)
-            ))?;
+            .map_err(|e| {
+                LightningSwapError::NetworkError(format!(
+                    "Failed to create reverse submarine swap: {}",
+                    e
+                ))
+            })?;
 
         let response_text = response.text().await.map_err(|e| {
             LightningSwapError::NetworkError(format!("Failed to read response: {}", e))
         })?;
 
-        let swap_response: CreateSwapResponse = serde_json::from_str(&response_text)
-            .map_err(|e| LightningSwapError::InvalidSwapResponse(
-                format!("Failed to parse reverse swap response: {}", e)
-            ))?;
+        let swap_response: CreateSwapResponse =
+            serde_json::from_str(&response_text).map_err(|e| {
+                LightningSwapError::InvalidSwapResponse(format!(
+                    "Failed to parse reverse swap response: {}",
+                    e
+                ))
+            })?;
 
         Ok(swap_response.into())
     }
 
-    async fn get_swap_status(
-        &self,
-        swap_id: &str,
-    ) -> LightningSwapResult<BoltzSwapStatusResponse> {
+    async fn get_swap_status(&self, swap_id: &str) -> LightningSwapResult<BoltzSwapStatusResponse> {
         tracing::debug!("Getting swap status for: {}", swap_id);
 
         let url = format!("{}/swapstatus", self.config.api_url);
         let mut params = HashMap::new();
         params.insert("id", swap_id);
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .json(&params)
             .send()
             .await
-            .map_err(|e| LightningSwapError::NetworkError(
-                format!("Failed to get swap status: {}", e)
-            ))?;
+            .map_err(|e| {
+                LightningSwapError::NetworkError(format!("Failed to get swap status: {}", e))
+            })?;
 
         let response_text = response.text().await.map_err(|e| {
             LightningSwapError::NetworkError(format!("Failed to read response: {}", e))
         })?;
 
-        let status_response: SwapStatusResponse = serde_json::from_str(&response_text)
-            .map_err(|e| LightningSwapError::InvalidSwapResponse(
-                format!("Failed to parse swap status response: {}", e)
-            ))?;
+        let status_response: SwapStatusResponse =
+            serde_json::from_str(&response_text).map_err(|e| {
+                LightningSwapError::InvalidSwapResponse(format!(
+                    "Failed to parse swap status response: {}",
+                    e
+                ))
+            })?;
 
         Ok(status_response.into())
     }
@@ -311,7 +329,7 @@ mod tests {
     fn test_boltz_testnet_creation() {
         let result = BoltzSwapProvider::new_testnet();
         assert!(result.is_ok());
-        
+
         let provider = result.unwrap();
         assert_eq!(provider.get_network(), BitcoinNetwork::Testnet);
     }
@@ -321,7 +339,7 @@ mod tests {
         let api_url = "http://localhost:9000/api".to_string();
         let result = BoltzSwapProvider::new_regtest(api_url.clone());
         assert!(result.is_ok());
-        
+
         let provider = result.unwrap();
         assert_eq!(provider.get_network(), BitcoinNetwork::Regtest);
         assert_eq!(provider.config.api_url, api_url);

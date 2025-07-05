@@ -5,9 +5,9 @@ use serde::Serialize;
 
 /// Configuration for ArkadeLightning
 pub struct ArkadeLightningConfig {
-    pub wallet: Box<dyn crate::Wallet>,
-    pub swap_provider: Box<dyn crate::SwapProvider>,
-    pub refund_handler: Option<Box<dyn crate::RefundHandler>>,
+    pub wallet: Box<dyn crate::lightning::Wallet>,
+    pub swap_provider: Box<dyn crate::lightning::SwapProvider>,
+    pub refund_handler: Option<Box<dyn crate::lightning::RefundHandler>>,
     pub timeout_config: Option<TimeoutConfig>,
     pub fee_config: Option<FeeConfig>,
     pub retry_config: Option<RetryConfig>,
@@ -114,55 +114,6 @@ pub struct DecodedInvoice {
     pub destination: String,
     pub payment_hash: String,
     pub expiry: u32,
-}
-
-/// BOLT12 offer for Lightning payments
-#[derive(Debug, Clone)]
-pub struct Bolt12Offer {
-    pub offer_id: String,
-    pub amount_sats: Option<u64>,
-    pub description: String,
-    pub node_id: String,
-    pub expiry: Option<u32>,
-    pub paths: Vec<String>,
-}
-
-/// Decoded BOLT12 invoice request
-#[derive(Debug, Clone)]
-pub struct DecodedBolt12InvoiceRequest {
-    pub offer_id: String,
-    pub amount_sats: u64,
-    pub payer_key: String,
-    pub payer_note: Option<String>,
-}
-
-/// BOLT12 invoice
-#[derive(Debug, Clone)]
-pub struct Bolt12Invoice {
-    pub invoice_request_id: String,
-    pub amount_sats: u64,
-    pub description: String,
-    pub payment_hash: String,
-    pub payment_paths: Vec<String>,
-    pub expiry: u32,
-}
-
-/// Arguments for creating BOLT12 offers
-#[derive(Debug, Clone)]
-pub struct CreateOfferArgs {
-    pub amount_sats: Option<u64>, // None for flexible amounts
-    pub description: String,
-    pub expiry_seconds: Option<u32>,
-    pub quantity_max: Option<u64>,
-}
-
-/// Arguments for paying a BOLT12 offer
-#[derive(Debug, Clone)]
-pub struct PayOfferArgs {
-    pub offer: String,            // The BOLT12 offer string
-    pub amount_sats: Option<u64>, // Required if offer doesn't specify amount
-    pub payer_note: Option<String>,
-    pub source_vtxos: Option<Vec<Vtxo>>,
 }
 
 /// Incoming payment subscription

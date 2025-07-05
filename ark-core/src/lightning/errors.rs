@@ -11,7 +11,7 @@ pub enum LightningSwapError {
     SwapError {
         message: String,
         is_refundable: bool,
-        swap_data: Option<crate::SwapData>,
+        swap_data: Option<crate::lightning::SwapData>,
     },
     /// Invalid swap response
     InvalidSwapResponse(String),
@@ -78,7 +78,7 @@ impl std::error::Error for InsufficientFundsError {}
 pub struct SwapError {
     pub message: String,
     pub is_refundable: bool,
-    pub swap_data: Option<crate::SwapData>,
+    pub swap_data: Option<crate::lightning::SwapData>,
 }
 
 impl SwapError {
@@ -90,7 +90,10 @@ impl SwapError {
         }
     }
 
-    pub fn with_refund_data(message: impl Into<String>, swap_data: crate::SwapData) -> Self {
+    pub fn with_refund_data(
+        message: impl Into<String>,
+        swap_data: crate::lightning::SwapData,
+    ) -> Self {
         Self {
             message: message.into(),
             is_refundable: true,
