@@ -164,6 +164,9 @@ where
         let mut boarding_inputs: Vec<round::OnChainInput> = Vec::new();
         let mut total_amount = Amount::ZERO;
 
+        // To track unique outpoints and prevent duplicates
+        let mut seen_outpoints = std::collections::HashSet::new();
+
         let now = Timestamp::now();
 
         // Find outpoints for each boarding output.
@@ -181,11 +184,19 @@ where
                     is_spent: false,
                 } = o
                 {
+                    // Check for duplicate outpoints
+                    if seen_outpoints.contains(outpoint) {
+                        continue;
+                    }
+
                     // Only include confirmed boarding outputs with an _inactive_ exit path.
                     if !boarding_output.can_be_claimed_unilaterally_by_owner(
                         now.as_duration().try_into().map_err(Error::ad_hoc)?,
                         std::time::Duration::from_secs(*confirmation_blocktime),
                     ) {
+                        // Mark this outpoint as seen
+                        seen_outpoints.insert(*outpoint);
+
                         boarding_inputs
                             .push(round::OnChainInput::new(boarding_output.clone(), *outpoint));
                         total_amount += *amount;
